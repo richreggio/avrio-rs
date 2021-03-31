@@ -17,7 +17,7 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub extern crate avrio_config;
-use avrio_config::{config, Config};
+use avrio_config::{config, config_db_path, Config};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 
 extern crate avrio_core;
@@ -151,7 +151,7 @@ pub async fn username_registered(
 
 #[tokio::main]
 async fn main_discord() {
-    let token = avrio_config::config().discord_token;
+    let token = &config().discord_token;
     if token != "DISCORD_TOKEN" {
         info!("Creating discord client");
         let mut client = Client::builder(&token)
@@ -288,20 +288,17 @@ fn generate_chains() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn database_present() -> bool {
-    let get_res = get_data(
-        config().db_path + &"/chains/masterchainindex".to_owned(),
-        &"digest".to_owned(),
-    );
+    let get_res = get_data(&(config_db_path() + "/chains/masterchainindex"), "digest");
     !(get_res == *"-1" || get_res == *"0")
 }
 
 fn create_file_structure() -> std::result::Result<(), Box<dyn std::error::Error>> {
     info!("Creating datadir folder structure");
-    create_dir_all(config().db_path + &"/blocks".to_string())?;
-    create_dir_all(config().db_path + &"/chains".to_string())?;
-    create_dir_all(config().db_path + &"/wallets".to_string())?;
-    create_dir_all(config().db_path + &"/accounts".to_string())?;
-    create_dir_all(config().db_path + &"/usernames".to_string())?;
+    create_dir_all(config_db_path() + "/blocks")?;
+    create_dir_all(config_db_path() + "/chains")?;
+    create_dir_all(config_db_path() + "/wallets")?;
+    create_dir_all(config_db_path() + "/accounts")?;
+    create_dir_all(config_db_path() + "/usernames")?;
     info!("Created datadir folder structure");
     Ok(())
 }
@@ -326,8 +323,8 @@ fn connect(seednodes: Vec<SocketAddr>, connected_peers: &mut Vec<TcpStream>) -> 
 }
 
 fn save_wallet(keypair: &[String]) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut conf = config();
-    let path = conf.db_path.clone() + &"/wallets/".to_owned() + &keypair[0];
+    let mut conf = config().clone();
+    let path = config_db_path() + "/wallets/" + keypair[0].as_str();
     if conf.wallet_password == Config::default().wallet_password {
         warn!("Your wallet password is set to default, please change this password and run avrio daemon with --change-password-from-default <newpassword> (TODO LEO)");
     }
@@ -354,8 +351,8 @@ fn save_wallet(keypair: &[String]) -> std::result::Result<(), Box<dyn std::error
         aead.encrypt(nonce, keypair[1].as_bytes().as_ref())
             .expect("wallet private key encryption failure!"),
     );
-    let _ = save_data(&publickey_en, &path, "pubkey".to_owned());
-    let _ = save_data(&privatekey_en, &path, "privkey".to_owned());
+    let _ = save_data(&publickey_en, &path, "pubkey");
+    let _ = save_data(&privatekey_en, &path, "privkey");
     info!("Saved wallet to {}", path);
     conf.chain_key = keypair[0].clone();
     conf.create()?;
@@ -366,7 +363,7 @@ fn generate_keypair(out: &mut Vec<String>) {
     let wallet: Wallet = Wallet::gen();
     out.push(wallet.public_key.clone());
     out.push(wallet.private_key);
-    let mut conf = config();
+    let mut conf = config().clone();
     conf.chain_key = wallet.public_key;
     let _ = conf.save();
 }
@@ -396,8 +393,8 @@ fn open_wallet(key: String, address: bool) -> Wallet {
     let nonce = GenericArray::from_slice(padded_string.as_bytes()); // 96-bits; unique per message
     trace!("nonce: {}", padded_string);
     let ciphertext = hex::decode(get_data(
-        config().db_path + &"/wallets/".to_owned() + &wall.public_key,
-        &"privkey".to_owned(),
+        &(config_db_path() + "/wallets/" + &wall.public_key),
+        "privkey",
     ))
     .expect("failed to parse hex");
     let privkey = String::from_utf8(
@@ -463,7 +460,7 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let seednode: bool = matches.is_present("is-seednode");
+    let seednode: bool = matches.is_present("seednode");
     let art = " 
      ▄▄▄▄▄▄▄▄▄▄▄  ▄               ▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
     ▐░░░░░░░░░░░▌▐░▌             ▐░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
@@ -484,7 +481,7 @@ fn main() {
     if seednode {
         warn!("Running in seednode mode, if you don't know what you are doing this is a mistake");
     }
-    let conf = config();
+    let conf = config().clone();
     conf.create().unwrap();
     if !database_present() {
         create_file_structure().unwrap();
@@ -499,7 +496,7 @@ fn main() {
     if config().chain_key == *"" {
         generate_chains().unwrap();
         let chainsdigest: String =
-            avrio_blockchain::form_state_digest(config().db_path + &"/chaindigest".to_owned())
+            avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest"))
                 .unwrap_or_default();
         info!("Chain digest: {}", chainsdigest);
     }
@@ -701,16 +698,13 @@ fn main() {
         info!("Propagated recieve block hash={}", rec_blk.hash);
     } else {
         info!("Using chain: {}", config().chain_key);
-        wall = open_wallet(config().chain_key, false);
+        wall = open_wallet(config().chain_key.clone(), false);
     }
     info!(
         "Transaction count for our chain: {}",
         avrio_database::get_data(
-            config().db_path
-                + &"/chains/".to_owned()
-                + &wall.public_key
-                + &"-chainindex".to_owned(),
-            &"txncount".to_owned(),
+            &(config_db_path() + "/chains/" + &wall.public_key + "-chainindex"),
+            "txncount",
         )
     );
     let try_get_acc = avrio_core::account::get_account(&wall.public_key);
@@ -764,23 +758,16 @@ fn main() {
             }
             txn.receive_key = rec_wall.public_key;
             txn.nonce = avrio_database::get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &txn.sender_key
-                    + &"-chainindex".to_owned(),
-                &"txncount".to_owned(),
+                &(config_db_path() + "/chains/" + &txn.sender_key + "-chainindex"),
+                "txncount",
             )
             .parse()
             .unwrap_or(0);
             txn.hash();
             let _ = txn.sign(&wall.private_key);
-            let inv_db = open_database(
-                config().db_path
-                    + &"/chains/".to_string()
-                    + &wall.public_key
-                    + &"-chainindex".to_string(),
-            )
-            .unwrap();
+            let inv_db =
+                open_database(config_db_path() + "/chains/" + &wall.public_key + "-chainindex")
+                    .unwrap();
             let mut highest_so_far: u64 = 0;
 
             for (key, _) in inv_db.iter() {
@@ -907,7 +894,7 @@ fn main() {
         } else if read == "get_transaction" {
             info!("Enter the transaction hash:");
             let hash: String = read!("{}\n");
-            let block_txn_is_in = get_data(config().db_path + &"/transactions".to_owned(), &hash);
+            let block_txn_is_in = get_data(&(config_db_path() + "/transactions"), &hash);
             if block_txn_is_in == *"-1" {
                 error!("Can not find that txn in db");
             } else {
@@ -988,11 +975,8 @@ fn main() {
                             let mut i: u64 = 0;
                             let mut txns: Vec<Transaction> = vec![];
                             let nonce_i = avrio_database::get_data(
-                                config().db_path
-                                    + &"/chains/".to_owned()
-                                    + &wall.public_key.clone()
-                                    + &"-chainindex".to_owned(),
-                                &"txncount".to_owned(),
+                                &(config_db_path() + "/chains/" + &wall.public_key + "-chainindex"),
+                                "txncount",
                             );
                             while i < txnamount {
                                 let mut txn = Transaction {
@@ -1022,10 +1006,7 @@ fn main() {
                                 info!("txn {}/{}", i, txnamount);
                             }
                             let inv_db = open_database(
-                                config().db_path
-                                    + &"/chains/".to_string()
-                                    + &wall.public_key
-                                    + &"-chainindex".to_string(),
+                                config_db_path() + "/chains/" + &wall.public_key + "-chainindex",
                             )
                             .unwrap();
                             let mut highest_so_far: u64 = 0;
@@ -1125,11 +1106,8 @@ fn main() {
             };
             txn.receive_key = wall.public_key.clone();
             txn.nonce = avrio_database::get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &txn.sender_key
-                    + &"-chainindex".to_owned(),
-                &"txncount".to_owned(),
+                &(config_db_path() + "/chains/" + &txn.sender_key + "-chainindex"),
+                "txncount",
             )
             .parse()
             .unwrap_or(0);
@@ -1138,10 +1116,7 @@ fn main() {
             let mut highest_so_far: u64 = 0;
             loop {
                 let try_new_heighest = get_data(
-                    config().db_path
-                        + &"/chains/".to_string()
-                        + &wall.public_key
-                        + &"-chainindex".to_string(),
+                    &(config_db_path() + "/chains/" + &wall.public_key + "-chainindex"),
                     &(highest_so_far + 1).to_string(),
                 );
                 if try_new_heighest != "-1" {
@@ -1243,21 +1218,15 @@ fn main() {
                     };
                     txn.receive_key = wall.public_key.clone();
                     txn.nonce = avrio_database::get_data(
-                        config().db_path
-                            + &"/chains/".to_owned()
-                            + &txn.sender_key
-                            + &"-chainindex".to_owned(),
-                        &"txncount".to_owned(),
+                        &(config_db_path() + "/chains/" + &txn.sender_key + "-chainindex"),
+                        "txncount",
                     )
                     .parse()
                     .unwrap_or(0);
                     txn.hash();
                     let _ = txn.sign(&wall.private_key);
                     let inv_db = open_database(
-                        config().db_path
-                            + &"/chains/".to_string()
-                            + &wall.public_key
-                            + &"-chainindex".to_string(),
+                        config_db_path() + "/chains/" + &wall.public_key + "-chainindex",
                     )
                     .unwrap();
                     let mut highest_so_far: u64 = 0;

@@ -7,7 +7,7 @@ use crate::{
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use avrio_blockchain::{get_block, get_block_from_raw, Block};
-use avrio_config::config;
+use avrio_config::config_db_path;
 use avrio_database::{get_data, open_database};
 use lazy_static::lazy_static;
 use std::net::TcpStream;
@@ -156,7 +156,7 @@ pub fn launch_handle_client(
                                 // send the peer our chain digest
                                 log::trace!("Sending chain digest to peer");
                                 let chain_digest = avrio_database::get_data(
-                                    avrio_config::config().db_path + "/chaindigest",
+                                    &(config_db_path() + "/chaindigest"),
                                     "master",
                                 );
                                 let _ = send(chain_digest, &mut stream, 0xcd, true, None);
@@ -250,7 +250,7 @@ pub fn launch_handle_client(
                                     stream.peer_addr().expect("Could not get addr for peer")
                                 );
                     
-                                if let Ok(db) = open_database(config().db_path + &"/chainlist".to_owned()) {
+                                if let Ok(db) = open_database(config_db_path() + "/chainlist") {
                                     
                                     let mut chains: Vec<String> = vec![];
                     
@@ -273,11 +273,11 @@ pub fn launch_handle_client(
                             0x45 => {
                                 // send block count
                                 let bc = get_data(
-                                    config().db_path
-                                        + &"/chains/".to_owned()
+                                    &(config_db_path()
+                                        + "/chains/"
                                         + &read_msg.message
-                                        + &"-chainindex".to_owned(),
-                                    &"blockcount".to_owned(),
+                                        + "-chainindex"),
+                                    "blockcount",
                                 );
                                 log::trace!("Blockcount={} for chain={}", bc, read_msg.message);
 

@@ -2,7 +2,7 @@ extern crate avrio_config;
 extern crate avrio_core;
 extern crate avrio_database;
 use crate::genesis::{get_genesis_block, GenesisBlockErrors};
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 use avrio_core::{
     account::{get_account, set_account, Account},
     transaction::*,
@@ -108,8 +108,8 @@ impl BlockSignature {
         // we are presuming the vote is valid - if it is not this is going to mess stuff up!
         if save_data(
             &self.nonce.to_string(),
-            &(config().db_path + "/fn-certificates"),
-            self.signer_public_key.clone(),
+            &(config_db_path() + "/fn-certificates"),
+            &self.signer_public_key,
         ) != 1
         {
             Err("failed to update nonce".into())
@@ -121,12 +121,12 @@ impl BlockSignature {
     pub fn valid(&self) -> bool {
         // check the fullnode who signed this block is registered. TODO (for sharding v1): move to using a vector of tuples(publickey, signature) and check each fullnode fully (was part of that epoch, was a validator node for the commitee handling the shard, etc)
         !(&get_data(
-            config().db_path + "/fn-certificates",
+            &(config_db_path() + "/fn-certificates"),
             &self.signer_public_key,
         ) == "-1"
             || self.hash != self.hash_return()
             || get_data(
-                config().db_path + "/chains/" + &self.signer_public_key + "-chainindex",
+                &(config_db_path() + "/chains/" + &self.signer_public_key + "-chainindex"),
                 "sigcount",
             ) != self.nonce.to_string()
             || self.timestamp - (config().transaction_timestamp_max_offset as u64)
@@ -253,9 +253,9 @@ pub fn generate_merkle_root_all() -> std::result::Result<String, Box<dyn std::er
 }
 */
 
-pub fn update_chain_digest(new_blk_hash: &str, cd_db: String, chain: &str) -> String {
+pub fn update_chain_digest(new_blk_hash: &str, cd_db: &str, chain: &str) -> String {
     trace!(target: "blockchain::chain_digest","Updating chain digest for chain={}, hash={}", chain, new_blk_hash);
-    let curr = get_data(cd_db.to_owned(), chain);
+    let curr = get_data(cd_db, chain);
     let root: String;
     if &curr == "-1" {
         trace!(target: "blockchain::chain_digest","chain digest not set");
@@ -264,7 +264,7 @@ pub fn update_chain_digest(new_blk_hash: &str, cd_db: String, chain: &str) -> St
         trace!(target: "blockchain::chain_digest","Updating set chain digest. Curr: {}", curr);
         root = avrio_crypto::raw_lyra(&(curr + new_blk_hash));
     }
-    let _ = save_data(&root, &cd_db, chain.to_owned());
+    let _ = save_data(&root, cd_db, chain);
     trace!(target: "blockchain::chain_digest","Chain digest for chain={} updated to {}", chain, root);
     root
 }
@@ -272,7 +272,7 @@ pub fn update_chain_digest(new_blk_hash: &str, cd_db: String, chain: &str) -> St
 /// takes a DB object of the chains digest (chaindigest) db and a vector of chain_keys (as strings) and calculates the chain digest for each chain.
 /// It then sets the value of chain digest (for each chain) in the db, and returns it in the vector of strings
 pub fn form_chain_digest(
-    cd_db: String,
+    cd_db: &str,
     chains: Vec<String>,
 ) -> std::result::Result<Vec<String>, Box<dyn std::error::Error>> {
     // TODO: do we need to return a Result<vec, err>? Cant we just return vec as there is no unwrapping needing to be done that could be replaced with the ? operator (and hence no chance of errors)?
@@ -304,7 +304,7 @@ pub fn form_chain_digest(
             }
         }
         // we are finished, update the chain_digest on disk and add it to the output vector
-        avrio_database::save_data(&temp_leaf, &cd_db, chain.to_owned());
+        avrio_database::save_data(&temp_leaf, cd_db, &chain);
         output.push(temp_leaf);
         trace!(
             "Chain digest: Finished chain={}, new output={:?}",
@@ -322,10 +322,10 @@ pub fn form_chain_digest(
 /// Run form_chain_digest(chain) (with chain being the publickey of the chain you want, or * for every chain) first which will form a chain digest
 /// from scratch (or update_chain_digest(chain, new_block_hash, cd_db)). This function will return the new state digest as a string as well as update it in the database
 ///
-pub fn form_state_digest(cd_db: String) -> std::result::Result<String, Box<dyn std::error::Error>> {
+pub fn form_state_digest(cd_db: &str) -> std::result::Result<String, Box<dyn std::error::Error>> {
     debug!("Updating state digest");
     let start = std::time::Instant::now();
-    let current_state_digest = get_data(cd_db.to_owned(), "master"); // get the current state digest, for refrence
+    let current_state_digest = get_data(cd_db, "master"); // get the current state digest, for refrence
     if &current_state_digest == "-1" {
         trace!("State digest not set");
     } else {
@@ -393,14 +393,14 @@ pub fn form_state_digest(cd_db: String) -> std::result::Result<String, Box<dyn s
         temp_leaf,
         start.elapsed().as_millis()
     );
-    avrio_database::save_data(&temp_leaf, &cd_db, "master".to_string());
+    avrio_database::save_data(&temp_leaf, cd_db, "master");
     Ok(temp_leaf)
 }
 
 /// returns the block when you know the chain and the height
 pub fn get_block(chain_key: &str, height: u64) -> Block {
     let hash = get_data(
-        config().db_path + "/chains/" + chain_key + "-chainindex",
+        &(config_db_path() + "/chains/" + chain_key + "-chainindex"),
         &height.to_string(),
     );
     if hash == *"-1" || hash == *"0" {
@@ -412,7 +412,7 @@ pub fn get_block(chain_key: &str, height: u64) -> Block {
 
 /// returns the block when you only know the hash by opeining the raw blk-HASH.dat file (where hash == the block hash)
 pub fn get_block_from_raw(hash: String) -> Block {
-    let try_open = File::open(config().db_path + &"/blocks/blk-".to_owned() + &hash + ".dat");
+    let try_open = File::open(config_db_path() + "/blocks/blk-" + &hash + ".dat");
     if let Ok(mut file) = try_open {
         let mut contents = String::new();
         file.read_to_string(&mut contents).unwrap();
@@ -431,7 +431,7 @@ pub fn get_block_from_raw(hash: String) -> Block {
 pub fn save_block(block: Block) -> std::result::Result<(), Box<dyn std::error::Error>> {
     trace!("Saving block with hash: {}", block.hash);
     let encoded: Vec<u8> = serde_json::to_string(&block)?.as_bytes().to_vec();
-    let mut file = File::create(config().db_path + "/blocks/blk-" + &block.hash + ".dat")?;
+    let mut file = File::create(config_db_path() + "/blocks/blk-" + &block.hash + ".dat")?;
     file.write_all(&encoded)?;
     trace!("Saved Block");
     Ok(())
@@ -550,7 +550,7 @@ impl Block {
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
             .as_millis() as u64;
-        let mut chain_key_value: String = config().chain_key; // if we were not passed a chain_key, use our one
+        let mut chain_key_value: String = config().chain_key.clone(); // if we were not passed a chain_key, use our one
         if let Some(key) = chain_key {
             chain_key_value = key;
         }
@@ -569,19 +569,13 @@ impl Block {
             Ok(blk_clone)
         } else {
             let top_block_hash = get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &chain_key_value
-                    + &"-chainindex".to_owned(),
+                &(config_db_path() + "/chains/" + &chain_key_value + "-chainindex"),
                 "topblockhash",
             );
             let our_height: u64;
             let our_height_ = get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &chain_key_value
-                    + &"-chainindex".to_owned(),
-                &"blockcount".to_owned(),
+                &(config_db_path() + "/chains/" + &chain_key_value + "-chainindex"),
+                "blockcount",
             );
             if our_height_ == "-1" {
                 our_height = 0
@@ -602,10 +596,7 @@ impl Block {
 /// enacts the relevant stuff for a send block (eg creating inv registry)
 pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
     if get_data(
-        config().db_path
-            + &"/chains/".to_owned()
-            + &block.header.chain_key
-            + &"-chainindex".to_owned(),
+        &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
         &block.header.height.to_string(),
     ) == "-1"
     {
@@ -614,31 +605,27 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
         let hash = block.hash.clone();
         let chain_key_copy = block.header.chain_key.to_owned();
         std::thread::spawn(move || {
-            update_chain_digest(
-                &hash,
-                config().db_path + &"/chaindigest".to_owned(),
-                &chain_key_copy,
-            );
-            form_state_digest(config().db_path + &"/chaindigest".to_owned()).unwrap();
+            update_chain_digest(&hash, &(config_db_path() + "/chaindigest"), &chain_key_copy);
+            form_state_digest(&(config_db_path() + "/chaindigest")).unwrap();
         });
 
         save_data(
             &block.hash,
-            &(config().db_path + &"/chaindigest".to_owned()),
-            "topblockhash".to_string(),
+            &(config_db_path() + "/chaindigest"),
+            "topblockhash",
         );
         save_data(
             &(block.header.height + 1).to_string(),
-            &(config().db_path + &"/chaindigest".to_owned()),
-            "blockcount".to_owned(),
+            &(config_db_path() + "/chaindigest"),
+            "blockcount",
         );
 
         trace!("set top block hash for sender");
 
         let inv_sender_res = save_data(
             &block.hash,
-            &(config().db_path + "/chains/" + &block.header.chain_key + "-chainindex"),
-            block.header.height.to_string(),
+            &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+            &block.header.height.to_string(),
         );
 
         trace!("Saved inv for sender: {}", block.header.chain_key);
@@ -647,31 +634,27 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
             return Err("failed to save sender inv".into());
         }
 
-        let block_count = get_data(config().db_path + &"/chaindigest".to_owned(), "blockcount");
+        let block_count = get_data(&(config_db_path() + "/chaindigest"), "blockcount");
 
         if block_count == *"-1" {
-            save_data(
-                &"1".to_owned(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
-            );
+            save_data("1", &(config_db_path() + "/chaindigest"), "blockcount");
             trace!("set block count, prev: -1 (not set), new: 1");
         } else {
             let mut bc: u64 = block_count.parse().unwrap_or_default();
             bc += 1;
             save_data(
                 &bc.to_string(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
+                &(config_db_path() + "/chaindigest"),
+                "blockcount",
             );
             trace!("Updated non-zero block count, new count: {}", bc);
         }
 
         if block.header.height == 0 {
             if save_data(
-                &"".to_owned(),
-                &(config().db_path + "/chainlist"),
-                block.header.chain_key.clone(),
+                "",
+                &(config_db_path() + "/chainlist"),
+                &block.header.chain_key,
             ) == 0
             {
                 return Err("failed to add chain to chainslist".into());
@@ -684,20 +667,14 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if avrio_database::get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &block.header.chain_key
-                    + &"-chainindex".to_owned(),
-                &"txncount",
-            ) == *"-1"
+                &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+                "txncount",
+            ) == "-1"
             {
                 avrio_database::save_data(
-                    &"0".to_string(),
-                    &(config().db_path
-                        + &"/chains/".to_owned()
-                        + &block.header.chain_key
-                        + &"-chainindex".to_owned()),
-                    "txncount".to_string(),
+                    "0",
+                    &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+                    "txncount",
                 );
             }
         }
@@ -716,10 +693,7 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
         return Err("tried to enact a send block".into());
     }
     if get_data(
-        config().db_path
-            + &"/chains/".to_owned()
-            + &block.header.chain_key
-            + &"-chainindex".to_owned(),
+        &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
         &block.header.height.to_string(),
     ) == "-1"
     {
@@ -728,65 +702,48 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
 
         let chain_key_copy = block.header.chain_key.to_owned();
         std::thread::spawn(move || {
-            update_chain_digest(
-                &hash,
-                config().db_path + &"/chaindigest".to_owned(),
-                &chain_key_copy,
-            );
-            form_state_digest(config().db_path + &"/chaindigest".to_owned()).unwrap();
+            update_chain_digest(&hash, &(config_db_path() + "/chaindigest"), &chain_key_copy);
+            form_state_digest(&(config_db_path() + "/chaindigest")).unwrap();
         });
         save_data(
             &block.hash,
-            &(config().db_path
-                + &"/chains/".to_owned()
-                + &block.header.chain_key
-                + &"-chainindex".to_owned()),
-            "topblockhash".to_string(),
+            &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+            "topblockhash",
         );
         save_data(
             &(block.header.height + 1).to_string(),
-            &(config().db_path
-                + &"/chains/".to_owned()
-                + &block.header.chain_key
-                + &"-chainindex".to_owned()),
-            "blockcount".to_string(),
+            &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+            "blockcount",
         );
         trace!("set top block hash for sender");
         let inv_sender_res = save_data(
             &block.hash,
-            &(config().db_path
-                + &"/chains/".to_owned()
-                + &block.header.chain_key
-                + &"-chainindex".to_owned()),
-            block.header.height.to_string(),
+            &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+            &block.header.height.to_string(),
         );
         trace!("Saved inv for sender: {}", block.header.chain_key);
         if inv_sender_res != 1 {
             return Err("failed to save sender inv".into());
         }
-        let block_count = get_data(config().db_path + &"/chaindigest".to_owned(), &"blockcount");
+        let block_count = get_data(&(config_db_path() + "/chaindigest"), "blockcount");
         if block_count == *"-1" {
-            save_data(
-                &"1".to_owned(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
-            );
+            save_data("1", &(config_db_path() + "/chaindigest"), "blockcount");
             trace!("set block count, prev: -1 (not set), new: 1");
         } else {
             let mut bc: u64 = block_count.parse().unwrap_or_default();
             bc += 1;
             save_data(
                 &bc.to_string(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
+                &(config_db_path() + "/chaindigest"),
+                "blockcount",
             );
             trace!("Updated non-zero block count, new count: {}", bc);
         }
         if block.header.height == 0 {
             if save_data(
-                &"".to_owned(),
-                &(config().db_path + "/chainlist"),
-                block.header.chain_key.clone(),
+                "",
+                &(config_db_path() + "/chainlist"),
+                &block.header.chain_key,
             ) == 0
             {
                 return Err("failed to add chain to chainslist".into());
@@ -797,36 +754,25 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
                 }
             }
             if avrio_database::get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &block.header.chain_key
-                    + &"-chainindex".to_owned(),
+                &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
                 &"txncount",
             ) == *"-1"
             {
                 avrio_database::save_data(
-                    &"0".to_string(),
-                    &(config().db_path
-                        + &"/chains/".to_owned()
-                        + &block.header.chain_key
-                        + &"-chainindex".to_owned()),
-                    "txncount".to_owned(),
+                    "0",
+                    &(config_db_path() + "/chains/" + &block.header.chain_key + "-chainindex"),
+                    "txncount",
                 );
             }
         }
         for txn in block.txns {
             trace!("enacting txn with hash: {}", txn.hash);
-            txn.enact(
-                config().db_path
-                    + &"/chains/".to_owned()
-                    + &txn.sender_key
-                    + &"-chainindex".to_owned(),
-            )?;
+            txn.enact(&(config_db_path() + "/chains/" + &txn.sender_key + "-chainindex"))?;
             trace!("Enacted txn. Saving txn to txindex db (db_name  = transactions)");
             if save_data(
                 &block.hash,
-                &(config().db_path + &"/transactions".to_owned()),
-                txn.hash.to_owned(),
+                &(config_db_path() + "/transactions"),
+                &txn.hash,
             ) != 1
             {
                 return Err("failed to save txn in transactions db".into());
@@ -835,50 +781,35 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
             if txn.sender_key != txn.receive_key && txn.sender_key != block.header.chain_key {
                 let inv_receiver_res = save_data(
                     &block.hash,
-                    &(config().db_path
-                        + &"/chains/".to_owned()
-                        + &txn.receive_key
-                        + &"-chainindex".to_owned()),
-                    block.header.height.to_string(),
+                    &(config_db_path() + "/chains/" + &txn.receive_key + "-chainindex"),
+                    &block.header.height.to_string(),
                 );
                 if inv_receiver_res != 1 {
                     return Err("failed to save reciver inv".into());
                 }
                 let curr_block_count: String = get_data(
-                    config().db_path
-                        + &"/chains/".to_owned()
-                        + &txn.receive_key
-                        + &"-chainindex".to_owned(),
+                    &(config_db_path() + "/chains/" + &txn.receive_key + "-chainindex"),
                     "blockcount",
                 );
                 if curr_block_count == "-1" {
                     save_data(
-                        &"0".to_owned(),
-                        &(config().db_path
-                            + &"/chains/".to_owned()
-                            + &txn.receive_key
-                            + &"-chainindex".to_owned()),
-                        "blockcount".to_owned(),
+                        "0",
+                        &(config_db_path() + "/chains/" + &txn.receive_key + "-chainindex"),
+                        "blockcount",
                     );
                 } else {
                     let curr_block_count_val: u64 = curr_block_count.parse().unwrap_or_default();
                     save_data(
                         &(curr_block_count_val + 1).to_string(),
-                        &(config().db_path
-                            + &"/chains/".to_owned()
-                            + &txn.receive_key
-                            + &"-chainindex".to_owned()),
-                        "blockcount".to_owned(),
+                        &(config_db_path() + "/chains/" + &txn.receive_key + "-chainindex"),
+                        "blockcount",
                     );
                 }
 
                 save_data(
                     &block.hash,
-                    &(config().db_path
-                        + &"/chains/".to_owned()
-                        + &txn.receive_key
-                        + &"-chainindex".to_owned()),
-                    "topblockhash".to_owned(),
+                    &(config_db_path() + "/chains/" + &txn.receive_key + "-chainindex"),
+                    "topblockhash",
                 );
                 trace!("set top block hash for reciever");
             }
@@ -909,7 +840,7 @@ pub fn check_block(blk: Block) -> std::result::Result<(), BlockValidationErrors>
             );
             return Err(BlockValidationErrors::InvalidBlockhash);
         }
-        if get_data(config().db_path + "/checkpoints", &blk.hash) != *"-1" {
+        if get_data(&(config_db_path() + "/checkpoints"), &blk.hash) != *"-1" {
             // we have this block in our checkpoints db and we know the hash is correct and therefore the block is valid
             return Ok(());
         }
@@ -1092,7 +1023,7 @@ mod tests {
         let rngc = randc::SystemRandom::new();
         for _i in 0..=1000 {
             let mut block = Block::default();
-            block.header.network = config().network_id;
+            block.header.network = config().network_id.clone();
 
             let pkcs8_bytes = signature::Ed25519KeyPair::generate_pkcs8(&rngc).unwrap();
             let key_pair = signature::Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref()).unwrap();

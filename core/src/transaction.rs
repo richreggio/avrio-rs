@@ -3,7 +3,7 @@ extern crate hex;
 use avrio_crypto::Hashable;
 extern crate avrio_config;
 extern crate bs58;
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 extern crate rand;
 
 use ring::signature;
@@ -102,7 +102,7 @@ impl Transaction {
 
     pub fn enact(
         &self,
-        chain_index_db: String,
+        chain_index_db: &str,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let txn_type: String = self.type_transaction();
         if txn_type == *"normal" {
@@ -123,14 +123,10 @@ impl Transaction {
             trace!("Saving sender acc");
             sendacc.save().unwrap();
             trace!("Get txn count");
-            let txn_count: u64 =
-                avrio_database::get_data(chain_index_db.to_owned(), &"txncount").parse()?;
+            let txn_count: u64 = avrio_database::get_data(chain_index_db, "txncount").parse()?;
             trace!("Setting txn count");
-            if avrio_database::save_data(
-                &(txn_count + 1).to_string(),
-                &chain_index_db,
-                "txncount".to_string(),
-            ) != 1
+            if avrio_database::save_data(&(txn_count + 1).to_string(), &chain_index_db, "txncount")
+                != 1
             {
                 return Err("failed to update send acc nonce".into());
             } else {
@@ -150,14 +146,10 @@ impl Transaction {
             trace!("Saving acc");
             let _ = acc.save();
             trace!("Get txn count");
-            let txn_count: u64 =
-                avrio_database::get_data(chain_index_db.to_owned(), &"txncount").parse()?;
+            let txn_count: u64 = avrio_database::get_data(chain_index_db, "txncount").parse()?;
             trace!("Setting txn count");
-            if avrio_database::save_data(
-                &(txn_count + 1).to_string(),
-                &chain_index_db,
-                "txncount".to_owned(),
-            ) != 1
+            if avrio_database::save_data(&(txn_count + 1).to_string(), &chain_index_db, "txncount")
+                != 1
             {
                 return Err("failed to update send acc nonce".into());
             } else {
@@ -185,12 +177,12 @@ impl Transaction {
                 }
                 trace!("Get txn count");
                 let txn_count: u64 =
-                    avrio_database::get_data(chain_index_db.to_owned(), &"txncount").parse()?;
+                    avrio_database::get_data(chain_index_db, "txncount").parse()?;
                 trace!("Setting txn count");
                 if avrio_database::save_data(
                     &(txn_count + 1).to_string(),
                     &chain_index_db,
-                    "txncount".to_owned(),
+                    "txncount",
                 ) != 1
                 {
                     return Err("failed to update send acc nonce".into());
@@ -214,11 +206,8 @@ impl Transaction {
         trace!("Validating txn with hash: {}", self.hash);
         let acc: Account = open_or_create(&self.sender_key);
         let txn_count = avrio_database::get_data(
-            config().db_path
-                + &"/chains/".to_owned()
-                + &self.sender_key
-                + &"-chainindex".to_owned(),
-            &"txncount".to_owned(),
+            &(config_db_path() + "/chains/" + &self.sender_key + "-chainindex"),
+            "txncount",
         );
         if self.nonce.to_string() != txn_count && !recieve {
             return Err(TransactionValidationErrors::BadNonce);

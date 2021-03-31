@@ -139,8 +139,12 @@ pub fn config_read() -> Config {
     }
 }
 
-pub fn config() -> Config {
-    CONFIG_STACK.clone()
+pub fn config() -> &'static Config {
+    &CONFIG_STACK
+}
+
+pub fn config_db_path() -> String {
+    config().db_path.clone()
 }
 
 fn hash_id(id: u64) -> String {

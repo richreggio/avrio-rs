@@ -126,8 +126,8 @@ impl P2pServer {
                                             d_split.len()
                                         );
 
-                                        if hex::encode(config().network_id) != d_split[0] {
-                                            log::debug!("Peer tried to handshake with wrong network id. Expecting: {}, got: {}. Ignoring...", hex::encode(config().network_id), d_split[0]);
+                                        if hex::encode(&config().network_id) != d_split[0] {
+                                            log::debug!("Peer tried to handshake with wrong network id. Expecting: {}, got: {}. Ignoring...", hex::encode(&config().network_id), d_split[0]);
                                             // TODO: send shutdown type first!
                                             stream.shutdown(std::net::Shutdown::Both).unwrap();
                                         } else {

@@ -2,7 +2,7 @@ extern crate avrio_database;
 
 use serde::{Deserialize, Serialize};
 extern crate avrio_config;
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::prelude::*;
@@ -81,8 +81,7 @@ impl Account {
 /// Gets the account assosiated with the username provided
 /// if the account or the username does not exist it returns an err
 pub fn get_by_username(username: &str) -> Result<Account, String> {
-    let path =
-        config().db_path + &"/usernames/".to_owned() + &avrio_crypto::raw_hash(username) + ".uname";
+    let path = config_db_path() + "/usernames/" + &avrio_crypto::raw_hash(username) + ".uname";
     if let Ok(mut file) = File::open(path) {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
@@ -93,13 +92,13 @@ pub fn get_by_username(username: &str) -> Result<Account, String> {
 }
 
 pub fn set_account(acc: &Account) -> u8 {
-    let path = config().db_path + "/accounts/" + &acc.public_key + ".account";
+    let path = config_db_path() + "/accounts/" + &acc.public_key + ".account";
     let serialized: String;
     let get_acc_old = get_account(&acc.public_key);
     if let Ok(deserialized) = get_acc_old {
         if acc.username != deserialized.username && deserialized != Account::default() {
-            let upath = config().db_path
-                + &"/usernames/".to_owned()
+            let upath = config_db_path()
+                + "/usernames/"
                 + &avrio_crypto::raw_hash(&acc.username)
                 + ".uname";
             info!("saving uname: {}.", deserialized.username);
@@ -141,7 +140,7 @@ pub fn set_account(acc: &Account) -> u8 {
 /// Gets the account assosiated with the public_key provided
 /// if the account does not exist it returns an err
 pub fn get_account(public_key: &str) -> Result<Account, u8> {
-    let path = config().db_path + &"/accounts/".to_owned() + public_key + ".account";
+    let path = config_db_path() + "/accounts/" + public_key + ".account";
     if let Ok(mut file) = File::open(path) {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::mem::size_of_val;
 use std::net::SocketAddr;
 
-use avrio_config::config;
+use avrio_config::config_db_path;
 static CACHE_VALUES: bool = false; // should we use a memtable to store database values in memory (NO, this is not yet working)
                                    // a lazy static muxtex (essentially a 'global' variable)
                                    // The first hashmap is wrapped in Option (either None, or Some) for startup saftey
@@ -261,7 +261,7 @@ pub fn init_cache(
     let mut databases_hashmap: DatabaseHashmap = HashMap::new();
     let mut database_lock_hashmap: HashMap<String, rocksdb::DB> = HashMap::new();
     for raw_path in to_cache_paths {
-        let final_path = config().db_path + raw_path;
+        let final_path = config_db_path() + raw_path;
         log::debug!("Caching db, path={}", final_path);
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -446,7 +446,7 @@ fn flush_dirty_to_disk(rec: Receiver<String>) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-pub fn save_data(serialized: &str, path: &str, key: String) -> u8 {
+pub fn save_data(serialized: &str, path: &str, key: &str) -> u8 {
     if CACHE_VALUES {
         //  gain a lock on the DATABASES lazy_sataic
         if let Ok(mut database_lock) = DATABASES.lock() {
@@ -529,8 +529,8 @@ pub fn save_data(serialized: &str, path: &str, key: String) -> u8 {
 }
 
 pub fn get_peerlist() -> std::result::Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
-    let peers_db = open_database(config().db_path + &"/peers".to_string()).unwrap();
-    let s = get_data_from_database(&peers_db, &"white");
+    let peers_db = open_database(config_db_path() + "/peers").unwrap();
+    let s = get_data_from_database(&peers_db, "white");
 
     drop(peers_db);
 
@@ -567,26 +567,22 @@ pub fn save_peerlist(list: &[SocketAddr]) -> std::result::Result<(), Box<dyn std
 
     let s = serde_json::to_string(&as_string)?;
 
-    save_data(
-        &s,
-        &(config().db_path + &"/peers".to_string()),
-        "white".to_string(),
-    );
+    save_data(&s, &(config_db_path() + "/peers"), "white");
 
     Ok(())
 }
 
-pub fn get_data(dbpath: String, key: &str) -> String {
+pub fn get_data(dbpath: &str, key: &str) -> String {
     if CACHE_VALUES {
         //  gain a lock on the DATABASES lazy_sataic
         if let Ok(database_lock) = DATABASES.lock() {
             // check if it contains a Some(x) value
             if let Some(databases) = database_lock.clone() {
                 // it does; now check if the databases hashmap contains our path (eg is this db cached)
-                if databases.contains_key(&dbpath) {
+                if databases.contains_key(dbpath) {
                     //  we have this database cached, read from it
                     // safe to get the value
-                    let db = databases[&dbpath].clone().0;
+                    let db = databases[dbpath].clone().0;
                     // does the database cache have this value?
                     if db.contains_key(key) {
                         //  we have this database cached, read from it
@@ -629,8 +625,8 @@ pub fn get_data(dbpath: String, key: &str) -> String {
         }
         _ => {
             let db_hashmap = &mut *db_file_lock;
-            if db_hashmap.contains_key(&dbpath) {
-                db = &db_hashmap[&dbpath];
+            if db_hashmap.contains_key(dbpath) {
+                db = &db_hashmap[dbpath];
             } else {
                 let mut opts = Options::default();
                 opts.create_if_missing(true);
@@ -638,7 +634,7 @@ pub fn get_data(dbpath: String, key: &str) -> String {
                 opts.increase_parallelism(((1.0 / 3.0) * num_cpus::get() as f64) as i32);
                 db_deref = DB::open(&opts, &dbpath).unwrap();
                 db = &db_deref;
-                let cloned_path = dbpath.clone();
+                let cloned_path: String = dbpath.into();
                 let try_lock = DATABASES.lock();
                 if let Ok(mut db_lock) = try_lock {
                     trace!("Get data, reloading cache");

@@ -1,14 +1,10 @@
 use aead::{generic_array::GenericArray, Aead, NewAead};
 use aes_gcm::Aes256Gcm; // Or `Aes128Gcm`
-use serenity::{
-    async_trait,
-    model::{gateway::Ready, id::ChannelId},
-    prelude::*,
-};
+
 use std::io::{self, Write};
 use std::thread;
-use tokio::runtime::Runtime;
 
+use avrio_rpc::*;
 extern crate clap;
 use clap::{App, Arg};
 
@@ -38,7 +34,6 @@ use avrio_database::{get_data, get_peerlist, open_database, save_data};
 
 #[macro_use]
 extern crate log;
-extern crate simple_logger;
 
 extern crate hex;
 
@@ -49,118 +44,6 @@ use avrio_crypto::Wallet;
 use fern::colors::{Color, ColoredLevelConfig};
 
 use text_io::read;
-struct Handler;
-static TXN_NOTIF_CHANNEL_ID: u64 = 823568815350480916;
-static mut CTX_HOLDER: Option<Context> = None;
-
-#[async_trait]
-impl EventHandler for Handler {
-    async fn ready(&self, ctx: Context, ready: Ready) {
-        info!("{} is connected!", ready.user.name);
-        unsafe { CTX_HOLDER = Some(ctx) }
-    }
-}
-
-pub async fn recieved_block(block: avrio_blockchain::Block) {
-    if config().discord_token == "DISCORD_TOKEN" {
-        return;
-    }
-    debug!("Discord hook: {:?}", block);
-
-    unsafe {
-        if let Err(why) = ChannelId(TXN_NOTIF_CHANNEL_ID)
-            .send_message(&CTX_HOLDER.clone().unwrap(), |m| {
-                m.embed(|e| {
-                    e.title("New Block recieved");
-                    e.field("Hash", block.hash.to_owned(), false);
-                    e.field("Transaction count", block.txns.len(), true);
-                    let mut total_transfered = 0;
-                    for txn in block.clone().txns {
-                        total_transfered += txn.amount;
-                    }
-                    e.field(
-                        "Total funds change",
-                        avrio_core::account::to_dec(total_transfered),
-                        true,
-                    );
-                    e.field("Timestamp", format!("{} ", block.header.timestamp), false);
-                    if block.block_type == BlockType::Recieve {
-                        e.field("Type", "Recieve", true);
-                        e.field(
-                            "Send block hash",
-                            format!("{} ", block.send_block.clone().unwrap_or_default()),
-                            true,
-                        );
-                    } else {
-                        e.field("Type", "Send", false);
-                    }
-                    //e.field("Signature", format!("{} ", txn.signature), false);
-                    //e.field("Gas, gas price, total fee", format!("{}, {}, {} ", txn.gas, txn.gas_price, txn.gas * txn.gas_price), false);
-                    e.footer(|f| {
-                        f.text("Avro Testnet Bot");
-
-                        f
-                    });
-                    e
-                });
-                m
-            })
-            .await
-        {
-            error!("Error sending message: {:?}", why);
-        };
-    }
-}
-
-pub async fn username_registered(block: Block, account: avrio_core::account::Account) {
-    if config().discord_token == "DISCORD_TOKEN" {
-        return;
-    }
-    debug!("Discord hook: {:?} {:?}", block, account);
-    unsafe {
-        if let Err(why) = ChannelId(TXN_NOTIF_CHANNEL_ID)
-            .send_message(&CTX_HOLDER.clone().unwrap(), |m| {
-                m.embed(|e| {
-                    e.title("New Username registered");
-                    e.field("Username", account.username.to_string(), true);
-                    e.field(
-                        "Address",
-                        avrio_crypto::public_key_to_address(&account.public_key),
-                        true,
-                    );
-                    e.field("In block", block.hash.to_owned(), false);
-                    e.field("Timestamp", format!("{} ", block.header.timestamp), false);
-                    e.footer(|f| {
-                        f.text("Avro Testnet Bot");
-
-                        f
-                    });
-                    e
-                });
-                m
-            })
-            .await
-        {
-            error!("Error sending message: {:?}", why);
-        };
-    }
-}
-
-#[tokio::main]
-async fn main_discord() {
-    let token = &config().discord_token;
-    if token != "DISCORD_TOKEN" {
-        info!("Creating discord client");
-        let mut client = Client::builder(&token)
-            .event_handler(Handler)
-            .await
-            .expect("Err creating client");
-
-        if let Err(why) = client.start().await {
-            error!("Client error: {:?}", why);
-        }
-    }
-}
 
 fn safe_exit() {
     // TODO: save mempool to disk + send kill to all threads.
@@ -180,49 +63,53 @@ fn setup_logging(verbosity: u64) -> Result<(), fern::InitError> {
             // let's not include them.
             base_config
                 .level(log::LevelFilter::Error)
-                .level_for("avrio_blockchain", log::LevelFilter::Error)
                 .level_for("avrio_database", log::LevelFilter::Error)
                 .level_for("avrio_config", log::LevelFilter::Error)
                 .level_for("avrio_daemon", log::LevelFilter::Error)
                 .level_for("avrio_core", log::LevelFilter::Error)
                 .level_for("avrio_crypto", log::LevelFilter::Error)
                 .level_for("avrio_blockchain", log::LevelFilter::Error)
+                .level_for("avrio_p2p", log::LevelFilter::Error)
         }
         1 => base_config
             .level(log::LevelFilter::Warn)
             .level(log::LevelFilter::Error)
-            .level_for("avrio_blockchain", log::LevelFilter::Warn)
             .level_for("avrio_database", log::LevelFilter::Warn)
             .level_for("avrio_config", log::LevelFilter::Warn)
             .level_for("seednode", log::LevelFilter::Warn)
             .level_for("avrio_core", log::LevelFilter::Warn)
             .level_for("avrio_crypto", log::LevelFilter::Warn)
+            .level_for("avrio_daemon", log::LevelFilter::Warn)
+            .level_for("avrio_p2p", log::LevelFilter::Warn)
             .level_for("avrio_blockchain", log::LevelFilter::Warn),
         2 => base_config
             .level(log::LevelFilter::Warn)
-            .level_for("avrio_blockchain", log::LevelFilter::Info)
             .level_for("avrio_database", log::LevelFilter::Info)
             .level_for("avrio_config", log::LevelFilter::Info)
             .level_for("seednode", log::LevelFilter::Info)
             .level_for("avrio_core", log::LevelFilter::Info)
             .level_for("avrio_crypto", log::LevelFilter::Info)
+            .level_for("avrio_p2p", log::LevelFilter::Info)
+            .level_for("avrio_daemon", log::LevelFilter::Info)
             .level_for("avrio_blockchain", log::LevelFilter::Info),
         3 => base_config
             .level(log::LevelFilter::Warn)
-            .level_for("avrio_blockchain", log::LevelFilter::Debug)
             .level_for("avrio_database", log::LevelFilter::Debug)
             .level_for("avrio_config", log::LevelFilter::Debug)
             .level_for("seednode", log::LevelFilter::Debug)
             .level_for("avrio_core", log::LevelFilter::Debug)
             .level_for("avrio_crypto", log::LevelFilter::Debug)
+            .level_for("avrio_p2p", log::LevelFilter::Debug)
+            .level_for("avrio_daemon", log::LevelFilter::Debug)
             .level_for("avrio_blockchain", log::LevelFilter::Debug),
         _ => base_config
             .level(log::LevelFilter::Warn)
-            .level_for("avrio_blockchain", log::LevelFilter::Trace)
             .level_for("avrio_database", log::LevelFilter::Trace)
             .level_for("avrio_config", log::LevelFilter::Trace)
             .level_for("seednode", log::LevelFilter::Trace)
             .level_for("avrio_core", log::LevelFilter::Trace)
+            .level_for("avrio_daemon", log::LevelFilter::Trace)
+            .level_for("avrio_p2p", log::LevelFilter::Trace)
             .level_for("avrio_crypto", log::LevelFilter::Trace)
             .level_for("avrio_blockchain", log::LevelFilter::Trace),
     };
@@ -306,6 +193,7 @@ fn create_file_structure() -> std::result::Result<(), Box<dyn std::error::Error>
 fn connect(seednodes: Vec<SocketAddr>, connected_peers: &mut Vec<TcpStream>) -> u8 {
     let mut conn_count: u8 = 0;
     for peer in seednodes {
+        debug!("Connecting to: {}", peer);
         let error = new_connection(&peer.to_string());
         match error {
             Ok(_) => {
@@ -416,6 +304,7 @@ fn main() {
         .version("Testnet Pre-alpha 0.0.1")
         .about("This is the offical daemon for the avrio network.")
         .author("Leo Cornelius")
+        .subcommand(App::new("seednode").about("Runs the node as a seednode"))
         .arg(
             Arg::with_name("conf")
                 .short("c")
@@ -423,6 +312,12 @@ fn main() {
                 .value_name("FILE")
                 .help("(DOESNT WORK YET!!) Sets a custom conf file, if not set will use node.conf")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("no-sync")
+                .help("Don't try and sync the node")
+                .long("--no-sync")
+                .takes_value(false),
         )
         .arg(
             Arg::with_name("loglev")
@@ -433,21 +328,6 @@ fn main() {
                 .help(
                     "Sets the level of verbosity: 0: Error, 1: Warn, 2: Info, 3: Debug, 4: Trace",
                 ),
-        )
-        .arg(
-            Arg::with_name("seednode")
-                .long("seednode")
-                .short("s")
-                .value_name("is-seednode")
-                .takes_value(false)
-                .help("Run in seednode mode?"),
-        )
-        .arg(
-            Arg::with_name("seednode ip address")
-                .long("seednode-addr")
-                .value_name("seednode-ip")
-                .takes_value(true)
-                .help("The public ip address of this seednode, prevents the seednode from connecting to itself"),
         )
         .get_matches();
     match matches.value_of("loglev").unwrap_or("2") {
@@ -505,12 +385,6 @@ fn main() {
                 .unwrap_or_default();
         info!("Chain digest: {}", chainsdigest);
     }
-    if config().discord_token != "DISCORD_TOKEN" {
-        info!("Launching discord thread");
-        let _discord_thread = thread::spawn(|| {
-            main_discord();
-        });
-    }
     info!(
         "Launching P2p server on {}:{}",
         config().ip_host,
@@ -532,32 +406,18 @@ fn main() {
         IpAddr::V4(Ipv4Addr::new(5, 189, 172, 54)),
         56789,
     )];
-    let mut seednode_ip: SocketAddr =
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
-    if let Some(seednode_ip_string) = matches.value_of("seednode-ip") {
-        seednode_ip = seednode_ip_string
-            .parse()
-            .expect("Failed to parse seednode addr into a SocketAddr");
-        info!("Our ip={}, string={}", seednode_ip, seednode_ip_string);
-    } else if seednode {
-        warn!("Running in seednode mode, but have not set seednode-addr. This may cause issues");
-    }
+    info!("P2P identity={}", config().identitiy);
 
     for node in seednodes {
-        if node != seednode_ip {
-            //dont connect to ourself
-            trace!("Adding seednode with addr={} to peerlist", node);
-            peerlist.push(node);
-        } else {
-            info!("Found own IP in seednode list not adding to peerlist");
-        }
+        trace!("Adding seednode with addr={} to peerlist", node);
+        peerlist.push(node);
     }
     let mut connections: Vec<TcpStream> = vec![];
     connect(peerlist, &mut connections);
     let connections_mut: Vec<&mut TcpStream> = connections.iter_mut().collect();
     let mut new_peers: Vec<SocketAddr> = vec![];
     for connection in &connections_mut {
-        for peer in avrio_p2p::helper::get_peerlist_from_peer(&mut connection.try_clone().unwrap())
+        for peer in avrio_p2p::helper::get_peerlist_from_peer(&connection.peer_addr().unwrap())
             .unwrap_or_default()
         {
             new_peers.push(peer);
@@ -574,37 +434,45 @@ fn main() {
     for peer in peerlist_update {
         let _ = new_connection(&peer.to_string());
     }
-    let syncneed = sync_needed();
+    if !matches.is_present("no-sync") {
+        let syncneed = sync_needed();
 
-    match syncneed {
-        // do we need to sync
-        Ok(val) => match val {
-            true => {
-                info!("Starting sync (this will take some time)");
-                if sync().is_ok() {
-                    info!("Successfully synced with the network!");
-                    synced = true;
-                } else {
-                    error!("Syncing failed");
-                    process::exit(1);
+        match syncneed {
+            // do we need to sync
+            Ok(val) => match val {
+                true => {
+                    info!("Starting sync (this will take some time)");
+                    if sync().is_ok() {
+                        info!("Successfully synced with the network!");
+                        synced = true;
+                    } else {
+                        error!("Syncing failed");
+                        process::exit(1);
+                    }
                 }
+                false => {
+                    info!("No sync needed");
+                    synced = true;
+                }
+            },
+            Err(e) => {
+                error!("Failed to ask peers if we need to sync, gave error: {}", e);
+                process::exit(1);
             }
-            false => {
-                info!("No sync needed");
-                synced = true;
-            }
-        },
-        Err(e) => {
-            error!("Failed to ask peers if we need to sync, gave error: {}", e);
-            process::exit(1);
+        }
+
+        if synced {
+            info!("Your avrio daemon is now synced and up to date with the network!");
+        } else {
+            safe_exit();
+            return;
         }
     }
-
-    if synced {
-        info!("Your avrio daemon is now synced and up to date with the network!");
-    } else {
-        return;
-    }
+    info!("Launching RPC server");
+    let _ = std::thread::spawn(move || {
+        launch(17785);
+    });
+    info!("Launched RPC server on port=17785");
     let wall: Wallet;
     if config().chain_key == "" {
         info!("Generating a chain for self");
@@ -681,10 +549,9 @@ fn main() {
         let _ = enact_send(genesis_block_clone.clone()).unwrap();
         let _ = prop_block(&genesis_block_clone).unwrap();
         info!("Sent block to network; Generating rec blocks");
-        let runtime = Runtime::new().unwrap();
-        let _ = runtime.block_on(async {
-            recieved_block(genesis_block_clone.clone()).await;
-        });
+        if let Ok(_) = block_announce(genesis_block_clone.clone()) {
+            info!("Sent new block to subscribed RPC peers");
+        }
 
         // recieved_block(genesis_block_clone.clone()).poll();
 
@@ -697,9 +564,9 @@ fn main() {
         let _ = save_block(rec_blk.clone()).unwrap();
         let _ = prop_block(&rec_blk).unwrap();
         let _ = enact_block(rec_blk.clone()).unwrap();
-        let _ = runtime.block_on(async {
-            recieved_block(rec_blk.clone()).await;
-        });
+        if let Ok(_) = block_announce(rec_blk.clone()) {
+            info!("Sent new block to subscribed RPC peers");
+        }
         info!("Propagated recieve block hash={}", rec_blk.hash);
     } else {
         info!("Using chain: {}", config().chain_key);
@@ -753,15 +620,19 @@ fn main() {
             let rec_wall;
             if avrio_crypto::valid_address(&addr) {
                 rec_wall = Wallet::from_address(addr);
+                txn.receive_key = rec_wall.public_key;
             } else {
-                rec_wall = Wallet::new(
-                    avrio_core::account::get_by_username(&addr)
-                        .unwrap()
-                        .public_key,
-                    "".to_owned(),
-                );
+                debug!("Could not find acc with addr={}, trying as username", addr);
+                if let Ok(acc) = avrio_core::account::get_by_username(&addr) {
+                    rec_wall = Wallet::new(acc.public_key, "".to_owned());
+                    txn.receive_key = rec_wall.public_key;
+                } else {
+                    error!(
+                        "Could not find an account with address or username = {}",
+                        addr
+                    );
+                }
             }
-            txn.receive_key = rec_wall.public_key;
             txn.nonce = avrio_database::get_data(
                 &(config_db_path() + "/chains/" + &txn.sender_key + "-chainindex"),
                 "txncount",
@@ -811,24 +682,25 @@ fn main() {
             let _ = save_block(blk.clone()).unwrap();
             let _ = enact_send(blk.clone()).unwrap();
             let _ = prop_block(&blk).unwrap();
-            let runtime = Runtime::new().unwrap();
-            let _ = runtime.block_on(async {
-                recieved_block(blk.clone()).await;
-            });
+            if let Ok(_) = block_announce(blk.clone()) {
+                info!("Sent new block to subscribed RPC peers");
+            }
             // now for each txn to a unique reciver form the rec block of the block we just formed and prob + enact that
-            let proccessed_accs: Vec<String> = vec![];
+            let mut proccessed_accs: Vec<String> = vec![];
             for txn in &blk.txns {
                 if !proccessed_accs.contains(&txn.receive_key) {
                     let rec_blk = blk
                         .form_receive_block(Some(txn.receive_key.to_owned()))
                         .unwrap();
+                    trace!("Created rec block={:#?}", rec_blk);
                     let _ = check_block(rec_blk.clone()).unwrap();
                     let _ = save_block(rec_blk.clone()).unwrap();
                     let _ = prop_block(&rec_blk).unwrap();
                     let _ = enact_block(rec_blk.clone()).unwrap();
-                    let _ = runtime.block_on(async {
-                        recieved_block(blk.clone()).await;
-                    });
+                    if let Ok(_) = block_announce(rec_blk.clone()) {
+                        info!("Sent new block to subscribed RPC peers");
+                    }
+                    proccessed_accs.push(txn.receive_key.clone());
                 }
             }
             // all done
@@ -1054,10 +926,9 @@ fn main() {
                             let _ = save_block(blk.clone()).unwrap();
                             let _ = enact_send(blk.clone()).unwrap();
                             let _ = prop_block(&blk).unwrap();
-                            let runtime = Runtime::new().unwrap();
-                            let _ = runtime.block_on(async {
-                                recieved_block(blk.clone()).await;
-                            });
+                            if let Ok(_) = block_announce(blk.clone()) {
+                                info!("Sent new block to subscribed RPC peers");
+                            }
                             // now for each txn to a unique reciver form the rec block of the block we just formed and prob + enact that
                             let proccessed_accs: Vec<String> = vec![];
                             for txn in &blk.txns {
@@ -1069,10 +940,9 @@ fn main() {
                                     let _ = save_block(rec_blk.clone()).unwrap();
                                     let _ = prop_block(&rec_blk).unwrap();
                                     let _ = enact_block(rec_blk.clone()).unwrap();
-                                    let runtime = Runtime::new().unwrap();
-                                    let _ = runtime.block_on(async {
-                                        recieved_block(rec_blk.clone()).await;
-                                    });
+                                    if let Ok(_) = block_announce(rec_blk.clone()) {
+                                        info!("Sent new block to subscribed RPC peers");
+                                    }
                                 }
                             }
                             // all done
@@ -1161,10 +1031,9 @@ fn main() {
             let _ = save_block(blk.clone()).unwrap();
             let _ = enact_send(blk.clone()).unwrap();
             let _ = prop_block(&blk).unwrap();
-            let runtime = Runtime::new().unwrap();
-            let _ = runtime.block_on(async {
-                recieved_block(blk.clone()).await;
-            });
+            if let Ok(_) = block_announce(blk.clone()) {
+                info!("Sent new block to subscribed RPC peers");
+            }
             // now for each txn to a unique reciver form the rec block of the block we just formed and prob + enact that
             let proccessed_accs: Vec<String> = vec![];
             for txn in &blk.txns {
@@ -1176,9 +1045,9 @@ fn main() {
                     let _ = save_block(rec_blk.clone()).unwrap();
                     let _ = prop_block(&rec_blk).unwrap();
                     let _ = enact_block(rec_blk.clone()).unwrap();
-                    let _ = runtime.block_on(async {
-                        recieved_block(rec_blk.clone()).await;
-                    });
+                    if let Ok(_) = block_announce(rec_blk.clone()) {
+                        info!("Sent new block to subscribed RPC peers");
+                    }
                 }
             }
             // all done
@@ -1271,10 +1140,9 @@ fn main() {
                     let _ = save_block(blk.clone()).unwrap();
                     let _ = enact_send(blk.clone()).unwrap();
                     let _ = prop_block(&blk).unwrap();
-                    let runtime = Runtime::new().unwrap();
-                    let _ = runtime.block_on(async {
-                        recieved_block(blk.clone()).await;
-                    });
+                    if let Ok(_) = block_announce(blk.clone()) {
+                        info!("Sent new block to subscribed RPC peers");
+                    }
                     // now for each txn to a unique reciver form the rec block of the block we just formed and prob + enact that
                     let proccessed_accs: Vec<String> = vec![];
                     for txn in &blk.txns {
@@ -1286,18 +1154,9 @@ fn main() {
                             let _ = save_block(rec_blk.clone()).unwrap();
                             let _ = prop_block(&rec_blk).unwrap();
                             let _ = enact_block(rec_blk.clone()).unwrap();
-                            let runtime = Runtime::new().unwrap();
-                            let _ = runtime.block_on(async {
-                                recieved_block(rec_blk.clone()).await;
-                            });
-                            let _ = runtime.block_on(async {
-                                username_registered(
-                                    rec_blk,
-                                    avrio_core::account::get_account(&wall.public_key)
-                                        .unwrap_or_default(),
-                                )
-                                .await;
-                            });
+                            if let Ok(_) = block_announce(rec_blk.clone()) {
+                                info!("Sent new block to subscribed RPC peers");
+                            }
                         }
                     }
                     // all done;

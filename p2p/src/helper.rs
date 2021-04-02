@@ -14,14 +14,16 @@ use avrio_database::get_data;
 use log::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::thread;
 
-/// TODO: implment this
-pub fn get_peerlist_from_peer(
-    _peer: &mut TcpStream,
-) -> Result<Vec<std::net::SocketAddr>, Box<dyn Error>> {
-    Ok(vec![])
+pub fn get_peerlist_from_peer(peer: &SocketAddr) -> Result<Vec<SocketAddr>, Box<dyn Error>> {
+    let mut peer_lock = lock(peer, 1000)?;
+    send("".to_string(), &mut peer_lock, 0x9f, true, None)?;
+    let peerlist_ser = read(&mut peer_lock, Some(20000), None)?; // wait for 20 secs
+    let peerlist: Vec<SocketAddr> = serde_json::from_str(&peerlist_ser.message)?;
+    unlock_peer(peer_lock).unwrap();
+    Ok(peerlist)
 }
 
 pub fn sync_needed() -> Result<bool, Box<dyn Error>> {
@@ -165,7 +167,7 @@ pub fn sync() -> Result<u64, String> {
     }
     drop(_peers); // destroy all remaining streams
 
-    let try_ack = syncack_peer(&mut peer_to_use_unwraped, false);
+    let try_ack = syncack_peer(&mut peer_to_use_unwraped);
     if let Err(e) = try_ack {
         error!("Got error: {} when sync acking peer. Releasing lock", e);
         unlock_peer(peer_to_use_unwraped).unwrap();
@@ -229,7 +231,7 @@ pub fn sync() -> Result<u64, String> {
     }
 
     info!("Synced all chains, checking chain digest with peers");
-    let cd = form_state_digest(&(config_db_path() + "/chaindigest")).unwrap(); //  recalculate our state digest
+    let cd = avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest")).unwrap(); //  recalculate our state digest
     if cd != mode_hash {
         error!("Synced blocks do not result in mode block hash, if you have appended blocks (using send_txn or generate etc) then ignore this. If not please delete your data dir and resync");
         error!("Our CD: {}, expected: {}", cd, mode_hash);
@@ -373,7 +375,7 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
         } else {
             let blocks: Vec<Block> = serde_json::from_str(&deformed.message).unwrap_or_default();
 
-            if blocks.is_empty() {
+            if !blocks.is_empty() {
                 trace!(
                     "Got: {} blocks from peer. Hash: {} up to: {}",
                     blocks.len(),
@@ -404,6 +406,8 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
                         );
                     }
                 }
+            } else {
+                warn!("Got empty block vec from peer");
             }
         }
 
@@ -495,7 +499,7 @@ pub fn send_block_with_hash(hash: String, peer: &mut TcpStream) -> Result<(), Bo
 // these should all be private, DO NOT PUBLICIZE THEM //
 
 /// This function asks the peer to sync, if they accept you can begin syncing
-pub fn syncack_peer(peer: &mut TcpStream, unlock: bool) -> Result<TcpStream, Box<dyn Error>> {
+fn syncack_peer(peer: &mut TcpStream) -> Result<TcpStream, Box<dyn Error>> {
     //lock(&peer.peer_addr().unwrap(), 10000);
 
     let syncreqres = send(
@@ -529,11 +533,6 @@ pub fn syncack_peer(peer: &mut TcpStream, unlock: bool) -> Result<TcpStream, Box
     // There are now bytes waiting in the stream
     let deformed: P2pData = read(peer, Some(10000), None).unwrap_or_default();
 
-    if unlock {
-        debug!("Releasing lock on peer");
-        //unlock_peer(peer).unwrap();
-    }
-
     if deformed.message == *"syncack" {
         info!("Got syncack from selected peer. Continuing");
 
@@ -548,7 +547,7 @@ pub fn syncack_peer(peer: &mut TcpStream, unlock: bool) -> Result<TcpStream, Box
         info!("Retrying syncack with same peer...");
 
         // try again
-        syncack_peer(&mut peer.try_clone()?, unlock)
+        syncack_peer(&mut peer.try_clone()?)
     }
 }
 

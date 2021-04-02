@@ -74,7 +74,7 @@ impl P2pServer {
         }
     }
 
-    fn deincrement_connections(&mut self) {
+    fn decrement_connections(&mut self) {
         if self.state != P2pServerState::DenyNewConnections
             && self.state != P2pServerState::Uninitialized
             && self.state != P2pServerState::ShuttingDown
@@ -129,7 +129,21 @@ impl P2pServer {
                                         if hex::encode(&config().network_id) != d_split[0] {
                                             log::debug!("Peer tried to handshake with wrong network id. Expecting: {}, got: {}. Ignoring...", hex::encode(&config().network_id), d_split[0]);
                                             // TODO: send shutdown type first!
-                                            stream.shutdown(std::net::Shutdown::Both).unwrap();
+                                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                                        } else if d_split[1] == config().identitiy {
+                                            let _ = crate::io::send(
+                                                "cancel".to_string(),
+                                                &mut stream,
+                                                0x1a,
+                                                true,
+                                                None,
+                                            );
+                                            log::debug!("Sent cancel to peer");
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                100,
+                                            ));
+                                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                                            log::debug!("Shutdown stream");
                                         } else {
                                             let addr_s = addr.to_string();
                                             let ip_s = addr_s.split(':').collect::<Vec<&str>>()[0];

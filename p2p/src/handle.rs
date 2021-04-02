@@ -1,21 +1,15 @@
-use crate::{
-    // format::P2pData,
-    io::{peek, read, send},
-    // peer::add_peer,
-};
+use crate::io::{peek, read, send};
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use avrio_blockchain::{get_block, get_block_from_raw, Block};
-use avrio_config::config_db_path;
+use avrio_config::{config, config_db_path};
 use avrio_database::{get_data, open_database};
 use lazy_static::lazy_static;
 use std::net::TcpStream;
 use std::sync::Mutex;
 extern crate rand;
 extern crate x25519_dalek;
-
-static MAX_SYNCING_PEERS: u64 = 8;
 
 lazy_static! {
     static ref SYNCING_PEERS: Mutex<(u64, Vec<String>)> = Mutex::new((0, vec![]));
@@ -25,7 +19,7 @@ fn get_syncing_peers_count() -> Result<u64, Box<dyn std::error::Error>> {
     return Ok(SYNCING_PEERS.lock()?.0);
 }
 
-fn set_syncing_peers_count(new: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn _set_syncing_peers_count(new: u64) -> Result<(), Box<dyn std::error::Error>> {
     SYNCING_PEERS.lock()?.0 = new;
     Ok(())
 }
@@ -46,7 +40,7 @@ fn add_peer_to_sync_list(peer: &SocketAddr) -> Result<(), Box<dyn std::error::Er
     }
     Ok(())
 }
-fn peer_syncing(peer: &SocketAddr) -> Result<bool, Box<dyn std::error::Error>> {
+fn _peer_syncing(peer: &SocketAddr) -> Result<bool, Box<dyn std::error::Error>> {
     return Ok(SYNCING_PEERS
         .lock()?
         .1
@@ -84,39 +78,47 @@ pub fn launch_handle_client(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = stream.try_clone()?;
     let _handler: std::thread::JoinHandle<Result<(), &'static str>> = std::thread::spawn(
-        move || loop {
-            if let Ok(msg) = rx.try_recv() {
-                if msg == "pause" {
-                    log::trace!("Pausing stream for peer");
-                    loop {
-                        if let Ok(msg) = rx.try_recv() {
-                            if msg == "run" {
-                                log::trace!("Resuming stream for peer");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if let Ok(a) = peek(&mut stream) {
+        move || {
+            let mut paused = false;
+            loop {
                 if let Ok(msg) = rx.try_recv() {
+                    log::debug!("Read msg={}", msg);
                     if msg == "pause" {
                         log::trace!("Pausing stream for peer");
                         loop {
                             if let Ok(msg) = rx.try_recv() {
                                 if msg == "run" {
                                     log::trace!("Resuming stream for peer");
+                                    paused = true;
                                     break;
                                 }
                             }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
                         }
                     }
                 }
-                if a != 0 {
-                    let read_data = read(&mut stream, Some(1000), None);
-                    if let Ok(read_msg) = read_data {
-                        read_msg.log();
-                        match read_msg.message_type {
+                if let Ok(a) = peek(&mut stream) {
+                    if let Ok(msg) = rx.try_recv() {
+                        log::debug!("Read msg={}", msg);
+                        if msg == "pause" {
+                            log::trace!("Pausing stream for peer");
+                            loop {
+                                if let Ok(msg) = rx.try_recv() {
+                                    if msg == "run" {
+                                        log::trace!("Resuming stream for peer");
+                                        paused = true;
+                                        break;
+                                    }
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                        }
+                    }
+                    if a != 0 && !paused {
+                        let read_data = read(&mut stream, Some(1000), None);
+                        if let Ok(read_msg) = read_data {
+                            read_msg.log();
+                            match read_msg.message_type {
                             // zero type msg
                             0 => {
                                 log::debug!(
@@ -126,8 +128,8 @@ pub fn launch_handle_client(
                             // sync req message
                             0x22 => {
                                 let used_slots =
-                                    get_syncing_peers_count().unwrap_or(MAX_SYNCING_PEERS);
-                                let slots_left = MAX_SYNCING_PEERS - used_slots;
+                                    get_syncing_peers_count().unwrap_or(config().max_syncing_peers);
+                                let slots_left = config().max_syncing_peers - used_slots;
                                 log::trace!("Recieved sync request from peer, current syncing peers: {}, slots left: {}", used_slots, slots_left);
                                 if slots_left > 0 {
                                     if add_peer_to_sync_list(
@@ -342,16 +344,61 @@ pub fn launch_handle_client(
                                 }
                     
                             }
-                            0x1a => log::debug!("Got handshake from handshook peer, ignoring"),
+                            0x1a => log::debug!("Got handshake from handshook peer, ignoring"), // TODO: rehandshake with peers to allow people who have restarted to recconect
+                            0x9f => {
+                                log::debug!("Peer=asked for peer list");
+                                let peerlist_get = avrio_database::get_peerlist();
+                                if let Ok(peers) = peerlist_get {
+                                    log::trace!("Got peerlist from DB");
+                                    if send(
+                                        serde_json::to_string(&peers).unwrap_or_default(),
+                                        &mut stream,
+                                        0x0a,
+                                        true,
+                                        None
+                                    ).is_ok() {
+                                        log::trace!(
+                                            "Sent all peers (amount: {})d to peer",
+                                            peers.len()
+                                        );
+                                    }
+                                } else {
+                                    log::warn!("Failed to get peerlist (context=p2p_get_peerlist_msg), error={}; sending blank", peerlist_get.unwrap_err());
+                                    let blank_vec: Vec<String> = vec![];
+                                    if send(
+                                        serde_json::to_string(&blank_vec).unwrap_or_default(),
+                                        &mut stream,
+                                        0x0a,
+                                        true,
+                                        None
+                                    ).is_ok() {
+                                        log::trace!(
+                                            "Sent blank vec as peerlist to peer"
+                                        );
+                                    }
+                                
+                                }
+                            },
+                            0x9a => {
+                                log::debug!("Recieved announce peer message, addr={}", read_msg.message);
+                                let parsed: Result<SocketAddr, _> = read_msg.message.parse();
+                                if let Ok(socket) = parsed {
+                                    let _ = avrio_database::add_peer(socket);
+                                    // TODO: Check if peer was in peer list and if we are over 25 peer connections, if not then connect to this new peer. Also relay this message to all connected peers
+                                }
+                            },
                             0xcd => log::error!("Read chain digest response. This means something has not locked properly. Will likley cause failed sync"),
                             _ => {
                                 log::debug!("Got unsupported message type: \"0x{:x}\", please check for updates", read_msg.message_type);
                             }
                         }
+                        }
                     }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                } else {
+                    return Err("failed to peek peer");
                 }
-            } else {
-                return Err("failed to peek peer");
+                paused = false;
             }
         },
     );

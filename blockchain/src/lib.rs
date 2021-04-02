@@ -342,7 +342,10 @@ pub fn form_state_digest(cd_db: &str) -> std::result::Result<String, Box<dyn std
                                                     //iter.seek_to_first();
     let _chains_list: Vec<String> = Vec::new();
     for (chain_key_string, chain_digest_string) in open_database(cd_db.to_owned())?.iter() {
-        if chain_key_string != "master" && chain_key_string != "blockcount" {
+        if chain_key_string != "master"
+            && chain_key_string != "blockcount"
+            && chain_key_string != "topblockhash"
+        {
             _roots.push((chain_key_string.to_owned(), chain_digest_string.to_owned()));
         } else {
             log::trace!(
@@ -584,7 +587,7 @@ impl Block {
             }
             trace!("our_height={}", our_height);
             blk_clone.header.chain_key = chain_key_value;
-            blk_clone.header.height = our_height + 1;
+            blk_clone.header.height = our_height; // we DONT need to add 1 to the blockcount as it is the COUNT of blocks on a chain which starts on 1, and block height starts from 0, this means there is already a +1 delta between the two
             blk_clone.send_block = Some(self.hash.to_owned());
             blk_clone.header.prev_hash = top_block_hash;
             blk_clone.hash();
@@ -726,7 +729,7 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
             return Err("failed to save sender inv".into());
         }
         let block_count = get_data(&(config_db_path() + "/chaindigest"), "blockcount");
-        if block_count == *"-1" {
+        if block_count == "-1" {
             save_data("1", &(config_db_path() + "/chaindigest"), "blockcount");
             trace!("set block count, prev: -1 (not set), new: 1");
         } else {
@@ -840,7 +843,7 @@ pub fn check_block(blk: Block) -> std::result::Result<(), BlockValidationErrors>
             );
             return Err(BlockValidationErrors::InvalidBlockhash);
         }
-        if get_data(&(config_db_path() + "/checkpoints"), &blk.hash) != *"-1" {
+        if get_data(&(config_db_path() + "/checkpoints"), &blk.hash) != "-1" {
             // we have this block in our checkpoints db and we know the hash is correct and therefore the block is valid
             return Ok(());
         }

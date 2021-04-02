@@ -81,7 +81,8 @@ impl Account {
 /// Gets the account assosiated with the username provided
 /// if the account or the username does not exist it returns an err
 pub fn get_by_username(username: &str) -> Result<Account, String> {
-    let path = config_db_path() + "/usernames/" + &avrio_crypto::raw_hash(username) + ".uname";
+    let path: String =
+        config_db_path() + "/usernames/" + &avrio_crypto::raw_hash(username) + ".uname";
     if let Ok(mut file) = File::open(path) {
         let mut contents = String::new();
         let _ = file.read_to_string(&mut contents);
@@ -92,12 +93,11 @@ pub fn get_by_username(username: &str) -> Result<Account, String> {
 }
 
 pub fn set_account(acc: &Account) -> u8 {
-    let path = config_db_path() + "/accounts/" + &acc.public_key + ".account";
-    let serialized: String;
+    let path: String = config_db_path() + "/accounts/" + &acc.public_key + ".account";
     let get_acc_old = get_account(&acc.public_key);
     if let Ok(deserialized) = get_acc_old {
         if acc.username != deserialized.username && deserialized != Account::default() {
-            let upath = config_db_path()
+            let upath: String = config_db_path()
                 + "/usernames/"
                 + &avrio_crypto::raw_hash(&acc.username)
                 + ".uname";
@@ -116,7 +116,7 @@ pub fn set_account(acc: &Account) -> u8 {
             }
         }
     }
-    serialized = serde_json::to_string(&acc).unwrap_or_else(|e| {
+    let serialized: String = serde_json::to_string(&acc).unwrap_or_else(|e| {
         error!("Unable To Serilise Account, gave error {}, retrying", e);
         serde_json::to_string(&acc).unwrap_or_else(|et| {
             error!("Retry Failed with error: {}", et);
@@ -137,7 +137,7 @@ pub fn set_account(acc: &Account) -> u8 {
     }
     1
 }
-/// Gets the account assosiated with the public_key provided
+/// Gets the account associated with the public_key provided
 /// if the account does not exist it returns an err
 pub fn get_account(public_key: &str) -> Result<Account, u8> {
     let path = config_db_path() + "/accounts/" + public_key + ".account";

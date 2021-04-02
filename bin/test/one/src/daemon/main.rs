@@ -112,10 +112,7 @@ pub async fn recieved_block(block: avrio_blockchain::Block) {
     }
 }
 
-pub async fn username_registered(
-    block: avrio_blockchain::Block,
-    account: avrio_core::account::Account,
-) {
+pub async fn username_registered(block: Block, account: avrio_core::account::Account) {
     if config().discord_token == "DISCORD_TOKEN" {
         return;
     }
@@ -165,7 +162,7 @@ async fn main_discord() {
     }
 }
 
-pub fn safe_exit() {
+fn safe_exit() {
     // TODO: save mempool to disk + send kill to all threads.
 
     info!("Goodbye!");
@@ -173,6 +170,7 @@ pub fn safe_exit() {
     avrio_database::close_flush_stream();
     std::process::exit(0);
 }
+
 fn setup_logging(verbosity: u64) -> Result<(), fern::InitError> {
     let mut base_config = fern::Dispatch::new();
     base_config = match verbosity {
@@ -273,6 +271,7 @@ fn setup_logging(verbosity: u64) -> Result<(), fern::InitError> {
 
     Ok(())
 }
+
 fn generate_chains() -> Result<(), Box<dyn std::error::Error>> {
     for block in genesis_blocks() {
         info!(
@@ -287,9 +286,10 @@ fn generate_chains() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Checks to see if a database has been previously created locally, Returns False if not found
 fn database_present() -> bool {
     let get_res = get_data(&(config_db_path() + "/chains/masterchainindex"), "digest");
-    !(get_res == *"-1" || get_res == *"0")
+    !(get_res == "-1" || get_res == "0")
 }
 
 fn create_file_structure() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -410,6 +410,8 @@ fn main() {
         safe_exit();
     })
     .expect("Error setting Ctrl-C handler");
+
+    // Load command line arguments
     let matches = App::new("Avrio Daemon")
         .version("Testnet Pre-alpha 0.0.1")
         .about("This is the offical daemon for the avrio network.")
@@ -448,7 +450,7 @@ fn main() {
                 .help("The public ip address of this seednode, prevents the seednode from connecting to itself"),
         )
         .get_matches();
-    match matches.value_of("loglev").unwrap_or(&"2") {
+    match matches.value_of("loglev").unwrap_or("2") {
         "0" => setup_logging(0).unwrap(),
         "1" => setup_logging(1).unwrap(),
         "2" => setup_logging(2).unwrap(),
@@ -481,10 +483,13 @@ fn main() {
     if seednode {
         warn!("Running in seednode mode, if you don't know what you are doing this is a mistake");
     }
-    let conf = config().clone();
-    conf.create().unwrap();
+
+    // Load config, if config is not stored locally it will be saved to disk
+    config();
+
+    // Detect if the database was found locally, creates the basic structure if not
     if !database_present() {
-        create_file_structure().unwrap();
+        create_file_structure().expect("Error creating database structure");
     }
     avrio_database::init_cache(1000000000).expect("Failed to init db cache"); // 1 gb db cache // TODO: Move this number (cache size) to config
     info!("Launching API server");
@@ -493,7 +498,7 @@ fn main() {
     });
     let synced: bool;
     info!("Avrio Daemon successfully launched");
-    if config().chain_key == *"" {
+    if config().chain_key == "" {
         generate_chains().unwrap();
         let chainsdigest: String =
             avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest"))
@@ -521,7 +526,7 @@ fn main() {
             process::exit(1);
         }
     });
-    let mut pl = get_peerlist().unwrap_or_default();
+    let mut peerlist = get_peerlist().unwrap_or_default();
     let seednodes: Vec<SocketAddr> = vec![SocketAddr::new(
         // TODO: use config, not hardcoded seednodes
         IpAddr::V4(Ipv4Addr::new(5, 189, 172, 54)),
@@ -542,13 +547,13 @@ fn main() {
         if node != seednode_ip {
             //dont connect to ourself
             trace!("Adding seednode with addr={} to peerlist", node);
-            pl.push(node);
+            peerlist.push(node);
         } else {
             info!("Found own IP in seednode list not adding to peerlist");
         }
     }
     let mut connections: Vec<TcpStream> = vec![];
-    connect(pl, &mut connections);
+    connect(peerlist, &mut connections);
     let connections_mut: Vec<&mut TcpStream> = connections.iter_mut().collect();
     let mut new_peers: Vec<SocketAddr> = vec![];
     for connection in &connections_mut {
@@ -560,13 +565,13 @@ fn main() {
     }
     let set: std::collections::HashSet<_> = new_peers.drain(..).collect(); // dedup
     new_peers.extend(set.into_iter());
-    let mut pl_u = get_peerlist().unwrap_or_default();
+    let mut peerlist_update = get_peerlist().unwrap_or_default();
     for peer in new_peers {
-        pl_u.push(peer);
+        peerlist_update.push(peer);
     }
-    let set: std::collections::HashSet<_> = pl_u.drain(..).collect(); // dedup
-    pl_u.extend(set.into_iter());
-    for peer in pl_u {
+    let set: std::collections::HashSet<_> = peerlist_update.drain(..).collect(); // dedup
+    peerlist_update.extend(set.into_iter());
+    for peer in peerlist_update {
         let _ = new_connection(&peer.to_string());
     }
     let syncneed = sync_needed();
@@ -601,10 +606,10 @@ fn main() {
         return;
     }
     let wall: Wallet;
-    if config().chain_key == *"" {
+    if config().chain_key == "" {
         info!("Generating a chain for self");
         generate_keypair(&mut chain_key);
-        if chain_key[0] == *"0" {
+        if chain_key[0] == "0" {
             error!("failed to create keypair (Fatal)");
             process::exit(1);
         } else {

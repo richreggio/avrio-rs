@@ -1,4 +1,5 @@
 extern crate avrio_config;
+use avrio_config::{config, config_db_path};
 extern crate num_cpus;
 use std::collections::HashMap;
 use std::sync::{
@@ -15,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use std::mem::size_of_val;
 use std::net::SocketAddr;
 
-use avrio_config::config;
 static CACHE_VALUES: bool = false; // should we use a memtable to store database values in memory (NO, this is not yet working)
                                    // a lazy static muxtex (essentially a 'global' variable)
                                    // The first hashmap is wrapped in Option (either None, or Some) for startup saftey
@@ -246,24 +246,23 @@ fn reload_cache(
     }
     Ok(())
 }
+
 pub fn init_cache(
     max_size: usize,
 ) -> Result<(Sender<String>, std::thread::JoinHandle<()>), Box<dyn std::error::Error>> {
-    // max_size is the max memory to use for caching, in bytes. Eg 1000000000 = 1gb (TODO, limmit mem used to this)
+    // max_size is the max memory to use for caching, in bytes. Eg 1000000000 = 1gb (TODO, limit mem used to this)
     // gain a lock on the DATABASES global varible to prevent people reading from it before we have assiged to it
     let mut db_lock = DATABASES.lock()?;
     trace!("Gained lock on lazy static");
-    // TODO move this to config
-    let to_cache_paths = /* (config().db_path + )*/ vec!["/chains/masterchainindex", "/chaindigest", "/peers"];
     log::info!(
         "Starting database cache, max size (bytes)={}, number_cachable_dbs={}",
         max_size,
-        to_cache_paths.len()
+        &config().db_cache_paths.len()
     );
     let mut databases_hashmap: DatabaseHashmap = HashMap::new();
     let mut database_lock_hashmap: HashMap<String, rocksdb::DB> = HashMap::new();
-    for raw_path in to_cache_paths {
-        let final_path = config().db_path + raw_path;
+    for raw_path in &config().db_cache_paths {
+        let final_path: String = config_db_path() + raw_path;
         log::debug!("Caching db, path={}", final_path);
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -448,7 +447,7 @@ fn flush_dirty_to_disk(rec: Receiver<String>) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-pub fn save_data(serialized: &str, path: &str, key: String) -> u8 {
+pub fn save_data(serialized: &str, path: &str, key: &str) -> u8 {
     if CACHE_VALUES {
         //  gain a lock on the DATABASES lazy_sataic
         if let Ok(mut database_lock) = DATABASES.lock() {
@@ -514,7 +513,7 @@ pub fn save_data(serialized: &str, path: &str, key: String) -> u8 {
         }
     };
 
-    if let Err(e) = db.put(key.clone(), serialized.to_string()) {
+    if let Err(e) = db.put(key.to_string(), serialized.to_string()) {
         error!("Failed to save data to db, gave error: {}", e);
 
         0
@@ -531,9 +530,9 @@ pub fn save_data(serialized: &str, path: &str, key: String) -> u8 {
 }
 
 pub fn get_peerlist() -> std::result::Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
-    let s = get_data(config().db_path + &"/peers".to_string(), &"white");
+    let s = get_data(&(config_db_path() + "/peers"), &"white");
 
-    if s == *"-1" {
+    if s == "-1" {
         Err("peerlist not found".into())
     } else {
         let peerlist: PeerlistSave = serde_json::from_str(&s)?;
@@ -566,26 +565,22 @@ pub fn save_peerlist(list: &[SocketAddr]) -> std::result::Result<(), Box<dyn std
 
     let s = serde_json::to_string(&as_string)?;
 
-    save_data(
-        &s,
-        &(config().db_path + &"/peers".to_string()),
-        "white".to_string(),
-    );
+    save_data(&s, &(config_db_path() + "/peers"), "white");
 
     Ok(())
 }
 
-pub fn get_data(dbpath: String, key: &str) -> String {
+pub fn get_data(dbpath: &str, key: &str) -> String {
     if CACHE_VALUES {
         //  gain a lock on the DATABASES lazy_sataic
         if let Ok(database_lock) = DATABASES.lock() {
             // check if it contains a Some(x) value
             if let Some(databases) = database_lock.clone() {
                 // it does; now check if the databases hashmap contains our path (eg is this db cached)
-                if databases.contains_key(&dbpath) {
+                if databases.contains_key(dbpath) {
                     //  we have this database cached, read from it
                     // safe to get the value
-                    let db = databases[&dbpath].clone().0;
+                    let db = databases[dbpath].clone().0;
                     // does the database cache have this value?
                     if db.contains_key(key) {
                         //  we have this database cached, read from it
@@ -628,8 +623,8 @@ pub fn get_data(dbpath: String, key: &str) -> String {
         }
         _ => {
             let db_hashmap = &mut *db_file_lock;
-            if db_hashmap.contains_key(&dbpath) {
-                db = &db_hashmap[&dbpath];
+            if db_hashmap.contains_key(dbpath) {
+                db = &db_hashmap[dbpath];
             } else {
                 let mut opts = Options::default();
                 opts.create_if_missing(true);
@@ -637,7 +632,7 @@ pub fn get_data(dbpath: String, key: &str) -> String {
                 opts.increase_parallelism(((1.0 / 3.0) * num_cpus::get() as f64) as i32);
                 db_deref = DB::open(&opts, &dbpath).unwrap();
                 db = &db_deref;
-                let cloned_path = dbpath.clone();
+                let cloned_path: String = dbpath.into();
                 let try_lock = DATABASES.lock();
                 if let Ok(mut db_lock) = try_lock {
                     trace!("Get data, reloading cache");

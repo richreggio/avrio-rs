@@ -8,7 +8,7 @@ use avrio_blockchain::{
     check_block, enact_block, enact_send, form_state_digest, from_compact, save_block, Block,
     BlockType,
 };
-use avrio_config::config;
+use avrio_config::config_db_path;
 use avrio_database::get_data;
 
 //use bson;
@@ -44,7 +44,7 @@ pub fn sync_needed() -> Result<bool, Box<dyn Error>> {
         // we got at least one chain digest
         // find the most common chain digest
         let mode: String = get_mode(chain_digests.clone());
-        let ours = get_data(config().db_path + &"/chaindigest".to_owned(), &"master");
+        let ours = get_data(&(config_db_path() + "/chaindigest"), "master");
         debug!(
             "Chain digests: {:#?}, mode: {}, ours: {}",
             chain_digests, mode, ours
@@ -264,7 +264,7 @@ pub fn sync() -> Result<u64, String> {
     }
 
     info!("Synced all chains, checking chain digest with peers");
-    let cd = avrio_blockchain::form_state_digest(config().db_path + "/chaindigest").unwrap(); //  recalculate our state digest
+    let cd = avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest")).unwrap(); //  recalculate our state digest
     if cd != mode_hash {
         error!("Synced blocks do not result in mode block hash, if you have appended blocks (using send_txn or generate etc) then ignore this. If not please delete your data dir and resync");
         error!("Our CD: {}, expected: {}", cd, mode_hash);
@@ -396,7 +396,7 @@ pub fn sync_in_order() -> Result<u64, Box<dyn std::error::Error>> {
                     let mut top_block_hash: String;
                     let peer = &mut peer_to_use_unwraped;
                     top_block_hash =
-                        get_data(config().db_path + "/globalindex", "globaltopblockhash");
+                        get_data(&(config_db_path() + "/globalindex"), "globaltopblockhash");
                     if top_block_hash == "-1" {
                         top_block_hash = "0".to_string();
                         if let Err(e) = send(serde_json::to_string(&0)?, peer, 0x7f, true, None) {
@@ -520,7 +520,7 @@ pub fn sync_in_order() -> Result<u64, Box<dyn std::error::Error>> {
                         let top_block_hash: String;
 
                         top_block_hash =
-                            get_data(config().db_path + "/globalindex", "globaltopblockhash");
+                            get_data(&(config_db_path() + "/globalindex"), "globaltopblockhash");
 
                         trace!("Asking peer for blocks above hash: {}", top_block_hash);
 
@@ -557,8 +557,9 @@ pub fn sync_in_order() -> Result<u64, Box<dyn std::error::Error>> {
                         }
                     }
                     info!("Synced all blocks, checking chain digest with peers");
-                    let cd = avrio_blockchain::form_state_digest(config().db_path + "/chaindigest")
-                        .unwrap(); //  recalculate our state digest
+                    let cd =
+                        avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest"))
+                            .unwrap(); //  recalculate our state digest
                     if cd != mode_hash {
                         error!("Synced blocks do not result in mode block hash, if you have appended blocks (using send_txn or register_username etc) then ignore this. If not please delete your data dir and resync");
                         error!("Our CD: {}, expected: {}", cd, mode_hash);
@@ -578,7 +579,7 @@ pub fn sync_in_order() -> Result<u64, Box<dyn std::error::Error>> {
     }
 
     info!("Synced all chains, checking chain digest with peers");
-    let cd = avrio_blockchain::form_state_digest(config().db_path + "/chaindigest").unwrap(); //  recalculate our state digest
+    let cd = avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest")).unwrap(); //  recalculate our state digest
     if cd != mode_hash {
         error!("Synced blocks do not result in mode block hash, if you have appended blocks (using send_txn or generate etc) then ignore this. If not please delete your data dir and resync");
         error!("Our CD: {}, expected: {}", cd, mode_hash);
@@ -649,7 +650,7 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
     let top_block_hash: String;
     // let opened_db: rocksdb::DB;
     top_block_hash = get_data(
-        config().db_path + "/chains/" + &chain + "-chainindex",
+        &(config_db_path() + "/chains/" + &chain + "-chainindex"),
         "topblockhash",
     );
 
@@ -780,7 +781,7 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
         let top_block_hash: String;
 
         top_block_hash = get_data(
-            config().db_path + "/chains/" + &chain + "-chainindex",
+            &(config_db_path() + "/chains/" + &chain + "-chainindex"),
             "topblockhash",
         );
 
@@ -819,7 +820,7 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
         "Recalculating chain digest for synced chain={}, result={:#?}",
         chain,
         avrio_blockchain::form_chain_digest(
-            &avrio_database::open_database(config().db_path + &"/chaindigest").unwrap(),
+            &avrio_database::open_database(config_db_path() + &"/chaindigest").unwrap(),
             vec![chain.to_owned()]
         )
         .unwrap()
@@ -915,9 +916,9 @@ fn syncack_peer(peer: &mut TcpStream) -> Result<TcpStream, Box<dyn Error>> {
 /// Sends our chain digest, this is a merkle root of all the blocks we have.avrio_blockchain.avrio_blockchain
 /// it is calculated with the generateChainDigest function which is auto called every time we get a new block
 fn send_chain_digest(peer: &mut TcpStream) {
-    let cd_db = config().db_path + &"/chaindigest".to_owned();
-    let chains_digest = avrio_database::get_data(cd_db.to_owned(), "master");
-    // let chains_digest = get_data(config().db_path + &"/chaindigest".to_owned(), &"master");
+    let cd_db = &(config_db_path() + "/chaindigest");
+    let chains_digest = get_data(cd_db, "master");
+    // let chains_digest = get_data(config_db_path() + "/chaindigest", "master");
 
     trace!("sending our chain digest: {}", chains_digest);
 

@@ -108,7 +108,7 @@ pub fn generate_genesis_block(
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as u64,
-            network: config().network_id,
+            network: config().network_id.clone(),
         },
         block_type: BlockType::Send,
         send_block: None,

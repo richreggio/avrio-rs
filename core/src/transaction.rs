@@ -3,7 +3,7 @@ extern crate hex;
 use avrio_crypto::Hashable;
 extern crate avrio_config;
 extern crate bs58;
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 extern crate rand;
 use avrio_database::{get_data, save_data};
 
@@ -112,15 +112,10 @@ impl Transaction {
         }
     }
     pub fn update_nonce(&self) -> std::result::Result<(), Box<dyn error::Error>> {
-        let chain_index_db = config().db_path + "/chains/" + &self.sender_key + "-chainindex";
-        let txn_count: u64 =
-            avrio_database::get_data(chain_index_db.to_owned(), &"txncount").parse()?;
+        let chain_index_db = config_db_path() + "/chains/" + &self.sender_key + "-chainindex";
+        let txn_count: u64 = avrio_database::get_data(&chain_index_db, &"txncount").parse()?;
         trace!("Setting txn count");
-        if avrio_database::save_data(
-            &(txn_count + 1).to_string(),
-            &chain_index_db,
-            "txncount".to_string(),
-        ) != 1
+        if avrio_database::save_data(&(txn_count + 1).to_string(), &chain_index_db, "txncount") != 1
         {
             return Err("failed to update send acc nonce".into());
         } else {
@@ -134,7 +129,7 @@ impl Transaction {
         };
     }
 
-    pub fn enact(&self, _chain_index_db: String) -> std::result::Result<(), Box<dyn error::Error>> {
+    pub fn enact(&self, _chain_index_db: &str) -> std::result::Result<(), Box<dyn error::Error>> {
         let txn_type: String = self.type_transaction();
         if txn_type == *"normal" {
             trace!("Opening senders account");
@@ -230,16 +225,13 @@ impl Transaction {
             return Err(TransactionValidationErrors::BadHash);
         }
         let account_nonce = get_data(
-            config().db_path
-                + &"/chains/".to_owned()
-                + &self.sender_key
-                + &"-chainindex".to_owned(),
-            &"txncount".to_owned(),
+            &(config_db_path() + "/chains/" + &self.sender_key + "-chainindex"),
+            "txncount",
         );
         if self.nonce.to_string() != account_nonce && account_nonce != "-1" {
             return Err(TransactionValidationErrors::BadNonce);
         }
-        let block_txn_is_in = get_data(config().db_path + &"/transactions".to_owned(), &self.hash);
+        let block_txn_is_in = get_data(&(config_db_path() + "/transactions"), &self.hash);
         if block_txn_is_in != *"-1" {
             error!(
                 "Transaction {} already in block {}",
@@ -529,11 +521,8 @@ impl Transaction {
         trace!("Validating txn with hash: {}", self.hash);
         let acc: Account = open_or_create(&self.sender_key);
         let txn_count = get_data(
-            config().db_path
-                + &"/chains/".to_owned()
-                + &self.sender_key
-                + &"-chainindex".to_owned(),
-            &"txncount".to_owned(),
+            &(config_db_path() + "/chains/" + &self.sender_key + "-chainindex"),
+            "txncount",
         );
         if !['c', 'n', 'b', 'u'].contains(&self.flag) {
             return Err(TransactionValidationErrors::UnsupportedType);

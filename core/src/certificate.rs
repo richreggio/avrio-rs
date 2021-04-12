@@ -4,7 +4,7 @@ This file handles the generation, validation and saving of the fullnodes certifi
 
 use std::time::{SystemTime, UNIX_EPOCH};
 extern crate avrio_config;
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 extern crate avrio_database;
 use crate::{invite::valid, transaction::Transaction};
 use avrio_database::get_data;
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_cert_diff() {
-        let conf = config();
+        let conf = config().clone();
         let diff = 4;
 
         let _ = conf.save();
@@ -200,7 +200,7 @@ pub fn generate_certificate(
         .as_millis() as u64;
 
     let diff_cert = diff; //config().certificate_difficulty;
-    let block_hash = get_data(config().db_path + "/transactions.db", &cert.txn_hash);
+    let block_hash = get_data(&(config_db_path() + "/transactions.db"), &cert.txn_hash);
     let blk = get_block_from_raw(block_hash); // get the txn to check if it is correct
     let mut txn: Transaction = Default::default();
 
@@ -267,7 +267,7 @@ impl Certificate {
         {
             return Err(CertificateErrors::TimestampHigh);
         }
-        let block_hash = get_data(config().db_path + "/transactions.db", &cert.txn_hash);
+        let block_hash = get_data(&(config_db_path() + "/transactions.db"), &cert.txn_hash);
         let blk = get_block_from_raw(block_hash); // get the txn to check if it is correct
         let mut txn: Transaction = Default::default();
 
@@ -289,8 +289,8 @@ impl Certificate {
             return Err(CertificateErrors::LockedFundsInsufficent);
         }
         let got_data = get_data(
-            config().db_path + &"/fn-certificates".to_owned(),
-            &(cert.public_key.to_owned() + &"-cert".to_owned()),
+            &(config_db_path() + "/fn-certificates"),
+            &(cert.public_key.to_owned() + "-cert"),
         );
 
         if got_data != *"-1" {
@@ -481,8 +481,7 @@ use std::io::prelude::*;
 /// irelavant clone from blockchain lib to preven cylic dependencys
 fn get_block_from_raw(hash: String) -> BlockClone {
     // returns the block when you only know the hash by opeining the raw blk-HASH.dat file (where hash == the block hash)
-    let mut file =
-        File::open(config().db_path + &"/blocks/blk-".to_owned() + &hash + ".dat").unwrap();
+    let mut file = File::open(config_db_path() + "/blocks/blk-" + &hash + ".dat").unwrap();
     let mut contents = String::new();
 
     let _ = file.read_to_string(&mut contents);

@@ -79,6 +79,7 @@ pub struct Config {
     pub version_minor: u8,
     pub coin_name: String,
     pub db_path: String,
+    pub db_cache_paths: Vec<String>,
     pub node_drop_off_threshold: u8,
     pub decimal_places: u8,
     pub max_connections: u16,
@@ -121,7 +122,10 @@ pub struct Config {
     pub max_syncing_peers: u64,
 }
 
-pub fn config_read() -> Config {
+/// Reads any config that has been saved to disk or if not found returns a default config file.
+/// It will also save the file to disk if it is not found.
+/// Should only be executed once per application run
+fn config_read() -> Config {
     log::trace!("Reading config from disk");
 
     if let Ok(mut file) = File::open("node.conf") {
@@ -137,12 +141,20 @@ pub fn config_read() -> Config {
     } else {
         log::trace!("Failed to read from disk");
 
-        Config::default()
+        let conf = Config::default();
+        conf.clone().create().unwrap();
+        conf
     }
 }
 
-pub fn config() -> Config {
-    CONFIG_STACK.clone()
+/// Helper function that returns a refererence to the application's config. Will initalize the config the first time it is called.
+pub fn config() -> &'static Config {
+    &CONFIG_STACK
+}
+
+/// Helper function that creates a String that can be easily concatenated with string slices to access the desired part of the database
+pub fn config_db_path() -> String {
+    config().db_path.clone()
 }
 
 fn hash_id(id: u64) -> String {
@@ -158,7 +170,7 @@ impl Default for ConfigSave {
         if let Some(dir) = home_dir() {
             if let Some(dir_str) = dir.to_str() {
                 ConfigSave {
-                    db_path: dir_str.to_string() + &"/.avrio-datadir".to_string(),
+                    db_path: dir_str.to_string() + "/.avrio-datadir",
                     max_connections: 50,
                     max_threads: 4,
                     chain_key: "".to_string(),
@@ -228,11 +240,16 @@ impl Default for ConfigSave {
 }
 
 impl ConfigSave {
-    pub fn to_config(&self) -> Config {
+    fn to_config(&self) -> Config {
         let nconf = NetworkConfig::default();
 
         Config {
             db_path: self.db_path.to_owned(),
+            db_cache_paths: vec![
+                "/chains/masterchainindex".into(),
+                "/chaindigest".into(),
+                "/peers".into(),
+            ],
             max_connections: self.max_connections,
             max_threads: self.max_threads,
             chain_key: self.chain_key.to_owned(),
@@ -324,7 +341,7 @@ impl Default for NetworkConfig {
 }
 
 impl Config {
-    pub fn prep_save(self) -> ConfigSave {
+    fn prep_save(self) -> ConfigSave {
         ConfigSave {
             db_path: self.db_path,
             max_connections: self.max_connections,

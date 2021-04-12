@@ -9,9 +9,10 @@ use std::fs::create_dir_all;
 use std::process;
 
 pub extern crate avrio_config;
-use avrio_config::config;
-use std::net::{SocketAddr, TcpStream};
+use avrio_config::{config, config_db_path, Config};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::Mutex;
+
 extern crate avrio_core;
 
 use avrio_p2p::{
@@ -55,6 +56,7 @@ pub fn safe_exit() {
     *(MEMPOOL.lock().unwrap()) = None;
     std::process::exit(0);
 }
+
 fn setup_logging(verbosity: u64) -> Result<(), fern::InitError> {
     let mut base_config = fern::Dispatch::new();
     base_config = match verbosity {
@@ -173,6 +175,7 @@ fn setup_logging(verbosity: u64) -> Result<(), fern::InitError> {
 
     Ok(())
 }
+
 fn generate_chains() -> Result<(), Box<dyn std::error::Error>> {
     for block in genesis_blocks() {
         info!(
@@ -187,21 +190,19 @@ fn generate_chains() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Checks to see if a database has been previously created locally, Returns False if not found
 fn database_present() -> bool {
-    let get_res = get_data(
-        config().db_path + &"/chains/masterchainindex".to_owned(),
-        &"digest".to_owned(),
-    );
-    !(get_res == *"-1" || get_res == *"0")
+    let get_res = get_data(&(config_db_path() + "/chains/masterchainindex"), "digest");
+    !(get_res == "-1" || get_res == "0")
 }
 
 fn create_file_structure() -> std::result::Result<(), Box<dyn std::error::Error>> {
     info!("Creating datadir folder structure");
-    create_dir_all(config().db_path + &"/blocks".to_string())?;
-    create_dir_all(config().db_path + &"/chains".to_string())?;
-    create_dir_all(config().db_path + &"/wallets".to_string())?;
-    create_dir_all(config().db_path + &"/accounts".to_string())?;
-    create_dir_all(config().db_path + &"/usernames".to_string())?;
+    create_dir_all(config_db_path() + "/blocks")?;
+    create_dir_all(config_db_path() + "/chains")?;
+    create_dir_all(config_db_path() + "/wallets")?;
+    create_dir_all(config_db_path() + "/accounts")?;
+    create_dir_all(config_db_path() + "/usernames")?;
     info!("Created datadir folder structure");
     Ok(())
 }
@@ -231,6 +232,8 @@ fn main() {
         safe_exit();
     })
     .expect("Error setting Ctrl-C handler");
+
+    // Load command line arguments
     let matches = App::new("Avrio Daemon")
         .version("Testnet Pre-alpha 0.0.1")
         .about("This is the offical daemon for the avrio network.")
@@ -261,7 +264,7 @@ fn main() {
                 ),
         )
         .get_matches();
-    match matches.value_of("loglev").unwrap_or(&"2") {
+    match matches.value_of("loglev").unwrap_or("2") {
         "0" => setup_logging(0).unwrap(),
         "1" => setup_logging(1).unwrap(),
         "2" => setup_logging(2).unwrap(),
@@ -293,10 +296,13 @@ fn main() {
     if seednode {
         warn!("Running in seednode mode, if you don't know what you are doing this is a mistake");
     }
-    let conf = config();
-    conf.create().unwrap();
+
+    // Load config, if config is not stored locally it will be saved to disk
+    config();
+
+    // Detect if the database was found locally, creates the basic structure if not
     if !database_present() {
-        create_file_structure().unwrap();
+        create_file_structure().expect("Error creating database structure");
     }
     avrio_database::init_cache(1000000000).expect("Failed to init db cache"); // 1 gb db cache // TODO: Move this number (cache size) to config
     info!("Launching API server");
@@ -310,15 +316,15 @@ fn main() {
         error!("Failed to initalise mempool, gave error={}", e);
         std::process::exit(0);
     }
-    let _ = mempool.load_from_disk(&(config().db_path + "/mempool")); // is allowed to fail
-    let _ = mempool.save_to_disk(&(config().db_path + "/mempool")); // create files
+    let _ = mempool.load_from_disk(&(config_db_path() + "/mempool")); // is allowed to fail
+    let _ = mempool.save_to_disk(&(config_db_path() + "/mempool")); // create files
     *(MEMPOOL.lock().unwrap()) = Some(mempool);
     info!("Avrio Daemon successfully launched");
-    let mut statedigest = get_data(config().db_path + &"/chaindigest".to_owned(), "master");
-    if statedigest == *"-1" {
+    let mut statedigest = get_data(config_db_path() + &"/chaindigest".to_owned(), "master");
+    if statedigest == "-1" {
         generate_chains().unwrap();
         statedigest =
-            avrio_blockchain::form_state_digest(config().db_path + &"/chaindigest".to_owned())
+            avrio_blockchain::form_state_digest(config_db_path() + &"/chaindigest".to_owned())
                 .unwrap_or_default();
         info!("State digest: {}", statedigest);
     } else {
@@ -352,10 +358,10 @@ fn main() {
 
     for node in seednodes {
         trace!("Adding seednode with addr={} to peerlist", node);
-        pl.push(node);
+        peerlist.push(node);
     }
     let mut connections: Vec<TcpStream> = vec![];
-    connect(pl, &mut connections);
+    connect(peerlist, &mut connections);
     let connections_mut: Vec<&mut TcpStream> = connections.iter_mut().collect();
     let mut new_peers: Vec<SocketAddr> = vec![];
     for connection in &connections_mut {
@@ -367,13 +373,13 @@ fn main() {
     }
     let set: std::collections::HashSet<_> = new_peers.drain(..).collect(); // dedup
     new_peers.extend(set.into_iter());
-    let mut pl_u = get_peerlist().unwrap_or_default();
+    let mut peerlist_update = get_peerlist().unwrap_or_default();
     for peer in new_peers {
-        pl_u.push(peer);
+        peerlist_update.push(peer);
     }
-    let set: std::collections::HashSet<_> = pl_u.drain(..).collect(); // dedup
-    pl_u.extend(set.into_iter());
-    for peer in pl_u {
+    let set: std::collections::HashSet<_> = peerlist_update.drain(..).collect(); // dedup
+    peerlist_update.extend(set.into_iter());
+    for peer in peerlist_update {
         let _ = new_connection(&peer.to_string());
     }
     if !matches.is_present("no-sync") {
@@ -464,7 +470,7 @@ fn main() {
         } else if read == "get_transaction" {
             info!("Enter the transaction hash:");
             let hash: String = read!("{}\n");
-            let block_txn_is_in = get_data(config().db_path + &"/transactions".to_owned(), &hash);
+            let block_txn_is_in = get_data(&(config_db_path() + "/transactions"), &hash);
             if block_txn_is_in == *"-1" {
                 error!("Can not find that txn in db");
             } else {

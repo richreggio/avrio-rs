@@ -85,7 +85,7 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
     if d_split.len() != 5 {
         trace!("d_split: {}, expected 4", d_split.len());
         Err("wrong return len: ".into())
-    } else if hex::encode(config().network_id) != d_split[0] {
+    } else if hex::encode(&config().network_id) != d_split[0] {
         Err("wrong network id".into())
     } else if d_split[1] == config().identitiy {
         return Err("tried to connect to peer with the same identity (self)".into());
@@ -139,7 +139,7 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
 pub fn form_handshake(l_pub: &[u8; 32]) -> String {
     return format!(
         "{}*{}*{}*{}*{}",
-        hex::encode(config().network_id),
+        hex::encode(&config().network_id),
         &config().identitiy,
         &config().node_type,
         &config().p2p_port,

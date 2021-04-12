@@ -8,7 +8,7 @@ use std::{
 };
 
 use avrio_blockchain::{get_block, get_block_from_raw, Block, from_compact};
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 use avrio_database::{get_data, open_database};
 use avrio_rpc::block_announce;
 use lazy_static::lazy_static;
@@ -315,7 +315,7 @@ pub fn process_handle_msg(
             // send the peer our chain digest
             log::trace!("Sending chain digest to peer");
             let chain_digest = avrio_database::get_data(
-                avrio_config::config().db_path + "/chaindigest",
+                &(config_db_path() + "/chaindigest"),
                 "master",
             );
             let _ = send(chain_digest, stream, 0xcd, true, None);
@@ -373,7 +373,7 @@ pub fn process_handle_msg(
                 stream.peer_addr().expect("Could not get addr for peer")
             );
 
-            if let Ok(db) = open_database(config().db_path + &"/chainlist".to_owned()) {
+            if let Ok(db) = open_database(config_db_path() + "/chainlist") {
                 
                 let mut chains: Vec<String> = vec![];
 
@@ -396,11 +396,11 @@ pub fn process_handle_msg(
         0x45 => {
             // send block count
             let bc = get_data(
-                config().db_path
-                    + &"/chains/".to_owned()
+                &(config_db_path()
+                    + "/chains/"
                     + &read_msg.message
-                    + &"-chainindex".to_owned(),
-                &"blockcount".to_owned(),
+                    + "-chainindex"),
+                "blockcount",
             );
             log::trace!("Blockcount={} for chain={}", bc, read_msg.message);
 
@@ -414,7 +414,7 @@ pub fn process_handle_msg(
         0x47 => {
             // send global block count
             let gbc = get_data(
-                config().db_path + &"/globalindex".to_owned(),
+                &(config_db_path() + "/globalindex"),
                 "globalblockcount",
             );
             log::trace!("Global blockcount={}", gbc);
@@ -494,7 +494,7 @@ pub fn process_handle_msg(
                 if hash == "0" || hash == "-1"  {
                     log::trace!("Getting blocks above network genesis (globally) ");
                     let got_index = get_data(
-                        config().db_path + "/globalindex","1");
+                        &(config_db_path() + "/globalindex"),"1");
                     if got_index != "-1"
                     {
                     block_from = get_block_from_raw(got_index);
@@ -521,7 +521,7 @@ pub fn process_handle_msg(
                         got += 1;
                         log::trace!("Sent block at height: {}", got);
                         let got_index = get_data(
-                            config().db_path + "/globalindex",&got.to_string());
+                            &(config_db_path() + "/globalindex"),&got.to_string());
                         if got_index != "-1" {
                             prev = get_block_from_raw(got_index);
                         } else {

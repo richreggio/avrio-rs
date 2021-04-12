@@ -13,13 +13,11 @@ description = "Testnet one, aimed at P2P, block and transaction code testing"
 name = "avrio-daemon"
 path = "src/daemon/main.rs"
 
-#[[bin]]
-#name = "avrio-wallet"
-#path = "src/wallet/main.rs"
-
+[[bin]]
+name = "avrio-wallet"
+path = "src/wallet/main.rs"
 
 [dependencies]
-simple_logger = "1.5.0"
 log = "0.4"
 avrio_core = { path = "../../../core" }
 avrio_database = { path = "../../../database" }
@@ -27,21 +25,22 @@ avrio_config = { path = "../../../config" }
 avrio_blockchain = { path = "../../../blockchain" }
 avrio_p2p = { path = "../../../p2p" }
 avrio_crypto = { path = "../../../crypto" }
+avrio_node = { path = "../../../node" }
 clap = "2.33.0"
 ring = "0.16.11"
 serde_json = "1"
+serde = { version = "1.0", features = ["derive"] }
 aes-gcm = "0.5.0"
 aead = "0.2.0"
 hex = "0.4.2"
 text_io = "0.1.8"
 avrio_api = { path = "../../../api" }
-serenity = { version = "0.10.4", default-features = false, features = [
-    "client",
-    "gateway",
-    "rustls_backend",
-    "model"
-] }
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 fern = { version = "0.6", features = ["colored"] }
 chrono = "0.4"
 ctrlc = "3.1.8"
+avrio_rpc = { path = "../../../rpc" }
+lazy_static = "1.4.0"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+rpassword = "5.0"
+rocket = { version = "0.4.7", default-features = true }

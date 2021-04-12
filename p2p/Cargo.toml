@@ -8,11 +8,12 @@ authors = [
 edition = "2018"
 
 [dependencies]
-avrio_config = { path = "../config" }
+avrio_config = { path = "../config/" }
 avrio_database = { path = "../database" }
 avrio_blockchain = { path = "../blockchain" }
 avrio_core = { path = "../core" }
 avrio_crypto = { path = "../crypto" }
+avrio_node = { path = "../node" }
 log = "~0.4"
 rand = "~0.7.3"
 serde = "~1.0.82"
@@ -23,5 +24,6 @@ simple_logger = "1.5.0"
 lazy_static = "1.4"
 x25519-dalek = "0.6.0"
 hex = "0.4.2"
-rust_crypto = { package = "rust-crypto", version = "^0.2" }
+aes-gcm = "0.8.0"
 serde_json = "1"
+avrio_rpc = { path = "../rpc" }

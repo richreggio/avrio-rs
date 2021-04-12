@@ -1,16 +1,18 @@
 use crate::{
     io::{read, send},
-    peer::add_peer,
+    peer::{add_peer, get_peers_addr, lock, remove_peer},
 };
 extern crate rand;
 extern crate x25519_dalek;
-
+use crate::peer::in_peers;
 use avrio_config::config;
-
-use std::convert::TryInto;
+use std::time::Duration;
+use std::{
+    convert::TryInto,
+    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr},
+};
 use x25519_dalek::EphemeralSecret;
 use x25519_dalek::PublicKey;
-
 fn from_slice(bytes: &[u8]) -> [u8; 32] {
     let mut array = [0; 32];
     let bytes = &bytes[..array.len()]; // panics if not enough data
@@ -20,15 +22,18 @@ fn from_slice(bytes: &[u8]) -> [u8; 32] {
 use log::trace;
 
 pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::error::Error>> {
+    if in_peers(&addr.parse::<SocketAddr>()?)? {
+        return Err("Already connected".into());
+    }
     log::info!("Connecting to {}", addr);
-    let mut a = std::net::TcpStream::connect(addr)?;
+    let mut a = std::net::TcpStream::connect_timeout(&(addr.parse()?), Duration::new(5, 0))?;
     let mut local_cspring = rand::rngs::OsRng;
     let local_sec = EphemeralSecret::new(&mut local_cspring);
     let local_pub = PublicKey::from(&local_sec);
     let handshake = form_handshake(local_pub.as_bytes());
     trace!("Formed handshake, {}", handshake);
     let _ = crate::io::send(
-        handshake,
+        handshake.clone(),
         &mut a,
         0xa,
         true,
@@ -39,11 +44,40 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
                 .unwrap(),
         ),
     )?;
-    let d = crate::io::read(
+    let mut d = crate::io::read(
         &mut a,
-        Some(100000),
+        Some(10000),
         Some("hand_keyhand_keyhand_keyhand_key".as_bytes()),
     )?;
+    if d.message == "cancel" {
+        return Err("canceled by peer".into());
+    }
+    if d.message_type == 0x03 {
+        // we are reconnecting to the peer, but they have not droped our socket yet. Resend everything
+        log::info!("Reconnecting to {}", addr);
+        drop(a);
+        a = std::net::TcpStream::connect(addr)?;
+        let _ = crate::io::send(
+            handshake,
+            &mut a,
+            0xa,
+            true,
+            Some(
+                "hand_keyhand_keyhand_keyhand_key"
+                    .as_bytes()
+                    .try_into()
+                    .unwrap(),
+            ),
+        )?;
+        d = crate::io::read(
+            &mut a,
+            Some(2000),
+            Some("hand_keyhand_keyhand_keyhand_key".as_bytes()),
+        )?;
+        if d.message == "cancel" {
+            return Err("canceled by peer".into());
+        }
+    }
     if d.message_type != 0x1a {
         return Err("wrong first response type".into());
     }
@@ -53,6 +87,8 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
         Err("wrong return len: ".into())
     } else if hex::encode(config().network_id) != d_split[0] {
         Err("wrong network id".into())
+    } else if d_split[1] == config().identitiy {
+        return Err("tried to connect to peer with the same identity (self)".into());
     } else {
         let addr_s = addr.to_string();
         let ip_s = addr_s.split(':').collect::<Vec<&str>>()[0];
@@ -64,7 +100,7 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
         send("".into(), &mut a, 0xa2, true, Some(ss))?;
         let p2_read = read(
             &mut a,
-            Some(10000),
+            Some(2000),
             Some("hand_keyhand_keyhand_keyhand_key".as_bytes()),
         );
         if let Ok(data) = p2_read {
@@ -75,7 +111,7 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
                 )
                 .into());
             } else if data.message != "ack" {
-                Err("peer did not understand our message; key derivitation failed".into())
+                Err("peer did not understand our message; key derivation failed".into())
             } else {
                 log::info!("Handshook with peer. Adding to peer list and launching handler stream");
                 let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -85,7 +121,7 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
                         e
                     );
                     return Err("failed to add peer to peer list".into());
-                } else if let Err(e) = crate::handle::launch_handle_client(rx, &mut a) {
+                } else if let Err(e) = crate::handle::launch_handle_client(rx, &mut a, true) {
                     log::error!("Failed to launch peer handler stream, gave error: {}", e);
                 }
                 Ok(a)
@@ -117,6 +153,22 @@ pub fn rec_server(address: &str) -> Result<(), Box<dyn std::error::Error>> {
     p2p_server.launch()
 }
 
-pub fn close_all() {}
+pub fn close_all() -> Result<(), Box<dyn std::error::Error>> {
+    log::info!("Closing all tcp streams");
+    for addr in &get_peers_addr()? {
+        let _ = close(addr)?;
+    }
+    Ok(())
+}
 
-pub fn close(_peer: std::net::SocketAddr) {}
+pub fn close(peer: &std::net::SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(mut stream) = lock(peer, 10000) {
+        log::info!("Disconnected from peer {}", stream.peer_addr()?,);
+        let _ = send("".to_string(), &mut stream, 0xff, true, None);
+        std::thread::sleep(Duration::from_micros(1000));
+        let _ = remove_peer(stream.peer_addr()?, true);
+        let _ = remove_peer(stream.peer_addr()?, false);
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+    Ok(())
+}

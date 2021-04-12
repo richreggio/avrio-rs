@@ -5,7 +5,8 @@ use crate::{
     utils::*,
 };
 use avrio_blockchain::{
-    check_block, enact_block, enact_send, form_state_digest, save_block, Block, BlockType,
+    check_block, enact_block, enact_send, form_state_digest, from_compact, save_block, Block,
+    BlockType,
 };
 use avrio_config::config;
 use avrio_database::get_data;
@@ -14,14 +15,16 @@ use avrio_database::get_data;
 use log::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::thread;
 
-/// TODO: implment this
-pub fn get_peerlist_from_peer(
-    _peer: &mut TcpStream,
-) -> Result<Vec<std::net::SocketAddr>, Box<dyn Error>> {
-    Ok(vec![])
+pub fn get_peerlist_from_peer(peer: &SocketAddr) -> Result<Vec<SocketAddr>, Box<dyn Error>> {
+    let mut peer_lock = lock(peer, 1000)?;
+    send("".to_string(), &mut peer_lock, 0x8f, true, None)?;
+    let peerlist_ser = read(&mut peer_lock, Some(20000), None)?; // wait for 20 secs
+    let peerlist: Vec<SocketAddr> = serde_json::from_str(&peerlist_ser.message)?;
+    unlock_peer(peer_lock).unwrap();
+    Ok(peerlist)
 }
 
 pub fn sync_needed() -> Result<bool, Box<dyn Error>> {
@@ -65,7 +68,7 @@ pub fn prop_block(blk: &Block) -> Result<u64, Box<dyn std::error::Error>> {
     let mut i: u64 = 0;
     for peer in get_peers_addr()?.iter_mut() {
         debug!("Sending block to peer: {:?}", peer);
-        let mut peer_stream = lock(peer, 1000)?;
+        let mut peer_stream = lock(peer, 10000)?;
         let send_res = send_block_struct(blk, &mut peer_stream);
         if send_res.is_ok() {
             i += 1;
@@ -82,6 +85,37 @@ pub fn prop_block(blk: &Block) -> Result<u64, Box<dyn std::error::Error>> {
     Ok(i)
 }
 
+/// # Prop_block
+/// Sends a block to all connected peers.
+/// # Returns
+/// a result enum conatining the error encountered or a u64 of the number of peers we sent to and got a block ack response from
+/// Once proof of node is in place it will send it only to the relevant comitee.
+pub fn prop_block_with_ignore(
+    blk: &Block,
+    ignore_peer: &SocketAddr,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut i: u64 = 0;
+    for peer in get_peers_addr()?.iter() {
+        if peer != ignore_peer {
+            debug!("Sending block to peer: {:?}", peer);
+            let mut peer_stream = lock(peer, 5000)?;
+            let send_res = send_block_struct(blk, &mut peer_stream);
+            if send_res.is_ok() {
+                i += 1;
+            } else {
+                trace!(
+                    "error sending block to peer {}, error={}",
+                    peer_stream.peer_addr()?,
+                    send_res.unwrap_err()
+                );
+            }
+            let _ = unlock_peer(peer_stream)?;
+        }
+    }
+    trace!("Sent block {} to {} peers", blk.hash, i);
+    Ok(i)
+}
+
 /// This is a cover all sync function that will sync all chains and covers getting the top index and syncing from there
 /// for more controll over your sync you should call the sync_chain function which will sync only the chain specifyed.
 /// pl is a vector of mutable refrences of TcpStreams (Vec<&mut TcpStream>), this function finds the most common chain digest
@@ -91,6 +125,7 @@ pub fn prop_block(blk: &Block) -> Result<u64, Box<dyn std::error::Error>> {
 /// the peer is malicously withholding them. For this reason only do this if you trust the peer or will be checking the blockchain
 /// with a diferent peer afterwards.
 pub fn sync() -> Result<u64, String> {
+    error!("You probably meant to call sync_in_order()");
     let mut pl = get_peers_addr().unwrap_or_default(); // list of all socket addrs
     std::thread::sleep(std::time::Duration::from_millis(500)); // wait 0.5 (500ms) seccond to ensure handler thread is paused
     if pl.is_empty() {
@@ -165,7 +200,7 @@ pub fn sync() -> Result<u64, String> {
     }
     drop(_peers); // destroy all remaining streams
 
-    let try_ack = syncack_peer(&mut peer_to_use_unwraped, false);
+    let try_ack = syncack_peer(&mut peer_to_use_unwraped);
     if let Err(e) = try_ack {
         error!("Got error: {} when sync acking peer. Releasing lock", e);
         unlock_peer(peer_to_use_unwraped).unwrap();
@@ -242,7 +277,320 @@ pub fn sync() -> Result<u64, String> {
 
     Ok(1)
 }
+pub fn sync_in_order() -> Result<u64, Box<dyn std::error::Error>> {
+    let mut pl = get_peers_addr().unwrap_or_default(); // list of all socket addrs
+    std::thread::sleep(std::time::Duration::from_millis(500)); // wait 0.5 (500ms) seccond to ensure handler thread is paused
+    if pl.is_empty() {
+        return Err("Must have at least one peer to sync from".into());
+    }
 
+    let mut _peers: Vec<TcpStream> = vec![];
+    let _pc: u32 = 0;
+    let _i: usize = 0;
+    let mut chain_digests: Vec<ChainDigestPeer> = vec![];
+
+    for peer in pl.iter_mut() {
+        //let _ = lock_peer(&peer.peer_addr().unwrap().to_string()).unwrap();
+
+        if let Ok(peer_new) = lock(peer, 1000) {
+            let mut cloned_peer = peer_new.try_clone().unwrap();
+            _peers.push(peer_new);
+            let handle = thread::Builder::new()
+                .name("getChainDigest".to_string())
+                .spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1000)); // wait 350ms for the handler thread to see our message and stop. TODO: wait for a response from the thread instead
+                    log::trace!("Get chain digest waited 100ms, proceeding");
+                    let chain_digest = get_chain_digest(&mut cloned_peer, false);
+
+                    if chain_digest.digest == " " {
+                        ChainDigestPeer {
+                            peer: Some(cloned_peer),
+                            digest: " ".to_string(),
+                        }
+                    } else {
+                        chain_digest
+                    }
+                });
+            if let Ok(handle_) = handle {
+                if let Ok(result) = handle_.join() {
+                    chain_digests.push(result);
+                }
+            }
+        }
+    }
+
+    let mut hashes: Vec<String> = vec![];
+    // let chainDigestsLen = chain_digests.len();
+
+    for hash in chain_digests.iter() {
+        hashes.push(hash.digest.clone());
+    }
+
+    let mode_hash = get_mode(hashes);
+    let mut peer_to_use: Option<TcpStream> = None;
+    let _i: u64 = 0;
+
+    for i in &chain_digests {
+        if *i.digest == mode_hash {
+            if let Some(peer_) = &i.peer {
+                peer_to_use = Some(peer_.try_clone().unwrap());
+            }
+        }
+    }
+
+    drop(chain_digests);
+    let mut peer_to_use_unwraped: TcpStream = peer_to_use.unwrap();
+
+    // Now unlock all peers we are not going to be using
+    let peer_to_use_addr = peer_to_use_unwraped.peer_addr().unwrap();
+    for peer in _peers.iter_mut() {
+        if peer.peer_addr().unwrap() != peer_to_use_addr {
+            // Clone the peer var to get a Stream object (rather than a mutable refrence), pass that to unlock_peer then
+            // after this loop drop the _peers list to destroy all the og streams
+            unlock_peer(peer.try_clone().unwrap()).unwrap();
+        }
+    }
+    drop(_peers); // destroy all remaining streams
+
+    let try_ack = syncack_peer(&mut peer_to_use_unwraped);
+    if let Err(e) = try_ack {
+        error!("Got error: {} when sync acking peer. Releasing lock", e);
+        unlock_peer(peer_to_use_unwraped).unwrap();
+        // TODO sync ack the next fastest peer until we have peer (1)
+        return Err("rejected sync ack".into());
+    } else {
+        // as we are syncing in ordered mode, we now ask the peer for their total block count
+        if let Err(e) = send(
+            "".to_string(),
+            &mut &mut peer_to_use_unwraped,
+            0x47,
+            true,
+            None,
+        ) {
+            error!(
+                "Failed to ask peer for their global block height, error={}",
+                e
+            );
+            return Err("could not get global block height".into());
+        } else {
+            let try_read_gh = read(&mut &mut peer_to_use_unwraped, Some(1000), None);
+            if let Ok(global_block_height) = try_read_gh {
+                if let Ok(amount_to_sync) = global_block_height.message.parse::<u64>() {
+                    info!("Got global block height from peer: {}", amount_to_sync);
+                    if amount_to_sync == 0 {
+                        let _ = unlock_peer(peer_to_use_unwraped).unwrap();
+                        return Ok(0);
+                    }
+                    let print_synced_every: u64;
+                    match amount_to_sync {
+                        0..=49 => print_synced_every = 1,
+                        50..=100 => print_synced_every = 5,
+                        101..=500 => print_synced_every = 10,
+                        501..=1000 => print_synced_every = 50,
+                        1001..=10000 => print_synced_every = 100,
+                        10001..=50000 => print_synced_every = 500,
+                        _ => print_synced_every = 5000,
+                    }
+                    let mut buf = [0; 2048];
+
+                    let mut top_block_hash: String;
+                    let peer = &mut peer_to_use_unwraped;
+                    top_block_hash =
+                        get_data(config().db_path + "/globalindex", "globaltopblockhash");
+                    if top_block_hash == "-1" {
+                        top_block_hash = "0".to_string();
+                        if let Err(e) = send(serde_json::to_string(&0)?, peer, 0x7f, true, None) {
+                            error!(
+                                "Asking peer for their blocks above hash: {} (globally) gave error: {}",
+                                top_block_hash, e
+                            );
+                            let _ =
+                                send("".to_string(), &mut peer_to_use_unwraped, 0x23, true, None);
+                            return Err(e);
+                        }
+                    } else if let Err(e) = send(
+                        serde_json::to_string(&top_block_hash)?,
+                        peer,
+                        0x7f,
+                        true,
+                        None,
+                    ) {
+                        error!(
+                            "Asking peer for their blocks above hash: {} (globally) gave error: {}",
+                            top_block_hash, e
+                        );
+                        let _ = send("".to_string(), &mut peer_to_use_unwraped, 0x23, true, None);
+                        return Err(e);
+                    }
+
+                    let mut synced_blocks: u64 = 0;
+                    let mut invalid_blocks: u64 = 0;
+
+                    info!(
+                        "Getting {} blocks from peer: {}, from block hash: {}",
+                        amount_to_sync,
+                        peer.peer_addr().unwrap(),
+                        top_block_hash
+                    );
+
+                    loop {
+                        let mut no_read: bool = true;
+
+                        while no_read {
+                            if let Ok(a) = peer.peek(&mut buf) {
+                                if a == 0 {
+                                } else {
+                                    no_read = false;
+                                }
+                            }
+                        }
+
+                        // There are now bytes waiting in the stream
+                        let deformed: P2pData = read(peer, Some(1000), None).unwrap_or_else(|e| {
+                            error!("Failed to read p2pdata: {}", e);
+                            P2pData::default()
+                        });
+
+                        trace!(target: "avrio_p2p::sync", "got blocks: {:#?}", deformed);
+
+                        if deformed.message_type != 0x04 {
+                            // TODO: Ask for block(s) again rather than returning err
+                            error!(
+                                "Failed to get block, wrong message type: {}",
+                                deformed.message_type
+                            );
+                            let _ =
+                                send("".to_string(), &mut peer_to_use_unwraped, 0x23, true, None);
+                            return Err("failed to get block".into());
+                        } else {
+                            let blocks_encoded: Vec<String> =
+                                serde_json::from_str(&deformed.message).unwrap_or_default();
+                            let mut blocks: Vec<Block> = vec![];
+                            for encoded in blocks_encoded {
+                                match from_compact(encoded.clone()) {
+                                    Ok(block) => blocks.push(block),
+                                    Err(e) => error!("Failed to decode compact block from peer, gave error={}, encoded={}", e, encoded),
+                                }
+                            }
+                            if !blocks.is_empty() {
+                                trace!(
+                                    "Got: {} blocks from peer. Hash: {} up to: {}",
+                                    blocks.len(),
+                                    blocks[0].hash,
+                                    blocks[blocks.len() - 1].hash
+                                );
+
+                                for block in blocks {
+                                    if let Err(e) = check_block(block.clone()) {
+                                        error!("Recieved invalid block with hash: {} from peer, validation gave error: {:#?}. Invalid blocks from peer: {}", block.hash, e, invalid_blocks);
+                                        invalid_blocks += 1;
+                                    } else {
+                                        save_block(block.clone())?;
+                                        if block.block_type == BlockType::Send {
+                                            enact_send(block)?;
+                                        } else {
+                                            enact_block(block)?;
+                                        }
+                                        synced_blocks += 1;
+                                    }
+                                    if synced_blocks % print_synced_every == 0 {
+                                        info!(
+                                            "Synced {} / {} blocks (global) {} more to go",
+                                            synced_blocks,
+                                            amount_to_sync,
+                                            amount_to_sync - synced_blocks
+                                        );
+                                    }
+                                }
+                            } else {
+                                error!(
+                                    "Got empty block vec from peer, synced={}, expected={}",
+                                    synced_blocks, amount_to_sync
+                                );
+                                warn!("Assuming done");
+                                break;
+                            }
+                        }
+
+                        if synced_blocks >= amount_to_sync {
+                            info!("Synced all {} blocks", synced_blocks);
+                            break;
+                        }
+
+                        let top_block_hash: String;
+
+                        top_block_hash =
+                            get_data(config().db_path + "/globalindex", "globaltopblockhash");
+
+                        trace!("Asking peer for blocks above hash: {}", top_block_hash);
+
+                        if top_block_hash == "-1" {
+                            if let Err(e) = send(serde_json::to_string(&0)?, peer, 0x7f, true, None)
+                            {
+                                error!(
+                                    "Asking peer for their blocks above hash: {} (globally) gave error: {}",
+                                    top_block_hash, e
+                                );
+                                let _ = send(
+                                    "".to_string(),
+                                    &mut peer_to_use_unwraped,
+                                    0x23,
+                                    true,
+                                    None,
+                                );
+                                return Err(e);
+                            }
+                        } else if let Err(e) = send(
+                            serde_json::to_string(&top_block_hash)?,
+                            peer,
+                            0x7f,
+                            true,
+                            None,
+                        ) {
+                            error!(
+                                "Asking peer for their blocks above hash: {} (globally) gave error: {}",
+                                top_block_hash, e
+                            );
+                            let _ =
+                                send("".to_string(), &mut peer_to_use_unwraped, 0x23, true, None);
+                            return Err(e);
+                        }
+                    }
+                    info!("Synced all blocks, checking chain digest with peers");
+                    let cd = avrio_blockchain::form_state_digest(config().db_path + "/chaindigest")
+                        .unwrap(); //  recalculate our state digest
+                    if cd != mode_hash {
+                        error!("Synced blocks do not result in mode block hash, if you have appended blocks (using send_txn or register_username etc) then ignore this. If not please delete your data dir and resync");
+                        error!("Our CD: {}, expected: {}", cd, mode_hash);
+                        let _ = send("".to_string(), &mut peer_to_use_unwraped, 0x23, true, None);
+                        return sync_in_order(); // this should sync again, why is it not?
+                    } else {
+                        info!("Finalised syncing, releasing lock on peer");
+                        let _ = send("".to_string(), &mut peer_to_use_unwraped, 0x23, true, None)
+                            .unwrap();
+                        let _ = unlock_peer(peer_to_use_unwraped).unwrap();
+                    }
+
+                    return Ok(1);
+                }
+            }
+        }
+    }
+
+    info!("Synced all chains, checking chain digest with peers");
+    let cd = avrio_blockchain::form_state_digest(config().db_path + "/chaindigest").unwrap(); //  recalculate our state digest
+    if cd != mode_hash {
+        error!("Synced blocks do not result in mode block hash, if you have appended blocks (using send_txn or generate etc) then ignore this. If not please delete your data dir and resync");
+        error!("Our CD: {}, expected: {}", cd, mode_hash);
+
+        //return sync(); // this should sync again, why is it not?
+    } else {
+        info!("Finalised syncing, releasing lock on peer");
+        let _ = unlock_peer(peer_to_use_unwraped).unwrap();
+    }
+
+    Ok(1)
+}
 /// This function syncs the specifyed chain only from the peer specifyed.
 /// It returns Ok(()) on succsess and handles the inventory generation, inventory saving, block geting, block validation,
 /// block saving, block enacting and informing the user of the progress.
@@ -255,7 +603,7 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
         true,
         None,
     );
-    let mut buf = [0; 1024];
+    let mut buf = [0; 2048];
     let mut no_read = true;
 
     while no_read {
@@ -289,12 +637,12 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
     info!("Got to get {} blocks for chain: {}", amount_to_sync, chain);
 
     match amount_to_sync {
-        0..=9 => print_synced_every = 1,
-        10..=100 => print_synced_every = 10,
-        101..=500 => print_synced_every = 50,
-        501..=1000 => print_synced_every = 100,
-        1001..=10000 => print_synced_every = 500,
-        10001..=50000 => print_synced_every = 2000,
+        0..=49 => print_synced_every = 1,
+        50..=100 => print_synced_every = 5,
+        101..=500 => print_synced_every = 10,
+        501..=1000 => print_synced_every = 50,
+        1001..=10000 => print_synced_every = 100,
+        10001..=50000 => print_synced_every = 500,
         _ => print_synced_every = 5000,
     }
 
@@ -363,7 +711,7 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
 
         trace!(target: "avrio_p2p::sync", "got blocks: {:#?}", deformed);
 
-        if deformed.message_type != 0x0a {
+        if deformed.message_type != 0x04 {
             // TODO: Ask for block(s) again rather than returning err
             error!(
                 "Failed to get block, wrong message type: {}",
@@ -371,9 +719,19 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
             );
             return Err("failed to get block".into());
         } else {
-            let blocks: Vec<Block> = serde_json::from_str(&deformed.message).unwrap_or_default();
-
-            if blocks.is_empty() {
+            let blocks_encoded: Vec<String> =
+                serde_json::from_str(&deformed.message).unwrap_or_default();
+            let mut blocks: Vec<Block> = vec![];
+            for encoded in blocks_encoded {
+                match from_compact(encoded.clone()) {
+                    Ok(block) => blocks.push(block),
+                    Err(e) => error!(
+                        "Failed to decode compact block from peer, gave error={}, encoded={}",
+                        e, encoded
+                    ),
+                }
+            }
+            if !blocks.is_empty() {
                 trace!(
                     "Got: {} blocks from peer. Hash: {} up to: {}",
                     blocks.len(),
@@ -404,6 +762,13 @@ pub fn sync_chain(chain: String, peer: &mut TcpStream) -> Result<u64, Box<dyn st
                         );
                     }
                 }
+            } else {
+                error!(
+                    "Got empty block vec from peer, synced={}, expected={}",
+                    synced_blocks, amount_to_sync
+                );
+                warn!("Assuming done");
+                break;
             }
         }
 
@@ -466,9 +831,9 @@ pub fn send_block_struct(block: &Block, peer: &mut TcpStream) -> Result<(), Box<
     if block.hash == Block::default().hash {
         Err("tried to send default block".into())
     } else {
-        let block_ser: String = serde_json::to_string(block)?; // serilise the block into bson
+        let block_ser: String = block.encode_compressed(); // serilise the block into bson
 
-        if let Err(e) = send(block_ser, peer, 0x0a, true, None) {
+        if let Err(e) = send(block_ser, peer, 0x04, true, None) {
             Err(e)
         } else {
             Ok(())
@@ -483,7 +848,7 @@ pub fn send_block_with_hash(hash: String, peer: &mut TcpStream) -> Result<(), Bo
     } else {
         let block_ser: String = bson::to_bson(&block)?.to_string();
 
-        if let Err(e) = send(block_ser, peer, 0x0a, true, None) {
+        if let Err(e) = send(block_ser, peer, 0x04, true, None) {
             Err(e)
         } else {
             Ok(())
@@ -495,7 +860,7 @@ pub fn send_block_with_hash(hash: String, peer: &mut TcpStream) -> Result<(), Bo
 // these should all be private, DO NOT PUBLICIZE THEM //
 
 /// This function asks the peer to sync, if they accept you can begin syncing
-pub fn syncack_peer(peer: &mut TcpStream, unlock: bool) -> Result<TcpStream, Box<dyn Error>> {
+fn syncack_peer(peer: &mut TcpStream) -> Result<TcpStream, Box<dyn Error>> {
     //lock(&peer.peer_addr().unwrap(), 10000);
 
     let syncreqres = send(
@@ -529,11 +894,6 @@ pub fn syncack_peer(peer: &mut TcpStream, unlock: bool) -> Result<TcpStream, Box
     // There are now bytes waiting in the stream
     let deformed: P2pData = read(peer, Some(10000), None).unwrap_or_default();
 
-    if unlock {
-        debug!("Releasing lock on peer");
-        //unlock_peer(peer).unwrap();
-    }
-
     if deformed.message == *"syncack" {
         info!("Got syncack from selected peer. Continuing");
 
@@ -548,7 +908,7 @@ pub fn syncack_peer(peer: &mut TcpStream, unlock: bool) -> Result<TcpStream, Box
         info!("Retrying syncack with same peer...");
 
         // try again
-        syncack_peer(&mut peer.try_clone()?, unlock)
+        syncack_peer(&mut peer.try_clone()?)
     }
 }
 

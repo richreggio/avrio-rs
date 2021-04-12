@@ -24,18 +24,35 @@ use std::io::prelude::*;
 
 #[derive(Debug)]
 pub enum BlockValidationErrors {
-    InvalidBlockhash,
+    TooManyTxn,
+    VersionTooNew,
+    InvalidBlockhash, // TODO: Rename to blockhash missmatch
+    BlockTooLarge,
     BadSignature,
     IndexMissmatch,
     InvalidPreviousBlockhash,
+    BlockCollision,
     InvalidTransaction(TransactionValidationErrors),
+    AccountExists,
+    FailedToGetAccount(u8),
+    TransactionCountNotZero,
     GenesisBlockMissmatch,
     FailedToGetGenesisBlock,
+    GenesisNotSendBlock,
     BlockExists,
     TooLittleSignatures,
     BadNodeSignature,
     TimestampInvalid,
     NetworkMissmatch,
+    AccountDoesNotExist,
+    PreviousBlockDoesNotExist,
+    SendBlockDoesNotExist,
+    BlockTooFarInTheFuture,
+    SendBlockNotFound,
+    SendBlockWrongType,
+    TransactionsNotInSendBlock,
+    TransactionFromWrongChain,
+    SendBlockEmpty,
     Other,
 }
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -211,47 +228,6 @@ impl BlockSignature {
         res
     }
 }
-/*
-pub fn generate_merkle_root_all() -> std::result::Result<String, Box<dyn std::error::Error>> {
-    trace!(target: "blockchain::chain_digest","Generating state digest from scratch");
-    let _roots: Vec<String> = vec![];
-    if let Ok(db) = open_database(config().db_path + "/chainlist") {
-        let mut iter = db.raw_iterator();
-        iter.seek_to_first();
-        let cd_db = open_database(config().db_path + &"/chaindigest".to_owned()).unwrap();
-        let mut chains_list: Vec<String> = Vec::new();
-        while iter.valid() {
-            if let Some(chain) = iter.key() {
-                if let Ok(chain_string) = String::from_utf8(chain.to_vec()) {
-                    chains_list.push(chain_string);
-                }
-            }
-            iter.next();
-        }
-        chains_list.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-        for chain_string in chains_list {
-            if let Ok(blkdb) =
-                open_database(config().db_path + "/chains/" + &chain_string + "-chainindex")
-            {
-                let mut blkiter = blkdb.raw_iterator();
-                blkiter.seek_to_first();
-                while blkiter.valid() {
-                    if let Some(blk) = iter.value() {
-                        let s: String = String::from_utf8(blk.to_vec())?;
-                        if let Ok(_) = String::from_utf8(iter.key().unwrap_or_default().to_vec())?
-                            .parse::<u64>()
-                        {
-                            trace!(target: "blockchain::chain_digest","Chain digest: {}", update_chain_digest(&s, &cd_db));
-                        }
-                    }
-                    blkiter.next();
-                }
-            }
-        }
-    }
-    return Ok(get_data(config().db_path + &"/chainsdigest", "master"));
-}
-*/
 
 pub fn update_chain_digest(new_blk_hash: &str, cd_db: String, chain: &str) -> String {
     trace!(target: "blockchain::chain_digest","Updating chain digest for chain={}, hash={}", chain, new_blk_hash);
@@ -342,7 +318,10 @@ pub fn form_state_digest(cd_db: String) -> std::result::Result<String, Box<dyn s
                                                     //iter.seek_to_first();
     let _chains_list: Vec<String> = Vec::new();
     for (chain_key_string, chain_digest_string) in open_database(cd_db.to_owned())?.iter() {
-        if chain_key_string != "master" && chain_key_string != "blockcount" {
+        if chain_key_string != "master"
+            && chain_key_string != "blockcount"
+            && chain_key_string != "topblockhash"
+        {
             _roots.push((chain_key_string.to_owned(), chain_digest_string.to_owned()));
         } else {
             log::trace!(
@@ -416,7 +395,12 @@ pub fn get_block_from_raw(hash: String) -> Block {
     if let Ok(mut file) = try_open {
         let mut contents = String::new();
         file.read_to_string(&mut contents).unwrap();
-        serde_json::from_str(&contents).unwrap_or_default()
+        let mut ret = Block::default();
+        if let Ok(_) = ret.decode_compressed(contents) {
+            return ret;
+        } else {
+            return Block::default();
+        }
     } else {
         trace!(
             "Opening raw block file (hash={}) failed. Reason={}",
@@ -430,7 +414,7 @@ pub fn get_block_from_raw(hash: String) -> Block {
 /// formats the block into a .dat file and saves it under block-hash.dat
 pub fn save_block(block: Block) -> std::result::Result<(), Box<dyn std::error::Error>> {
     trace!("Saving block with hash: {}", block.hash);
-    let encoded: Vec<u8> = serde_json::to_string(&block)?.as_bytes().to_vec();
+    let encoded: Vec<u8> = block.encode_compressed().as_bytes().to_vec();
     let mut file = File::create(config().db_path + "/blocks/blk-" + &block.hash + ".dat")?;
     file.write_all(&encoded)?;
     trace!("Saved Block");
@@ -590,7 +574,7 @@ impl Block {
             }
             trace!("our_height={}", our_height);
             blk_clone.header.chain_key = chain_key_value;
-            blk_clone.header.height = our_height + 1;
+            blk_clone.header.height = our_height; // we DONT need to add 1 to the blockcount as it is the COUNT of blocks on a chain which starts on 1, and block height starts from 0, this means there is already a +1 delta between the two
             blk_clone.send_block = Some(self.hash.to_owned());
             blk_clone.header.prev_hash = top_block_hash;
             blk_clone.hash();
@@ -609,7 +593,72 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
         &block.header.height.to_string(),
     ) == "-1"
     {
-        debug!("block not in invs");
+        let global_block_count_string = get_data(
+            config().db_path + &"/globalindex".to_owned(),
+            "globalblockcount",
+        );
+        let global_block_count: u64;
+        if global_block_count_string == "-1" {
+            save_data(
+                "1",
+                &(config().db_path + &"/globalindex".to_owned()),
+                "globalblockcount".to_string(),
+            );
+            global_block_count = 1;
+        } else {
+            if let Ok(global_block_count_int) = global_block_count_string.parse::<u64>() {
+                save_data(
+                    &(global_block_count_int + 1).to_string(),
+                    &(config().db_path + &"/globalindex".to_owned()),
+                    "globalblockcount".to_string(),
+                );
+                debug!(
+                    "Incremented global block count: old={}, new={}",
+                    global_block_count_int,
+                    global_block_count_int + 1
+                );
+                global_block_count = global_block_count_int + 1;
+            } else {
+                error!("Failed to parse current globalblockcount, setting to 1");
+                save_data(
+                    "1",
+                    &(config().db_path + &"/globalindex".to_owned()),
+                    "globalblockcount".to_string(),
+                );
+                global_block_count = 1;
+            }
+        }
+        if get_data(
+            config().db_path + "/globalindex",
+            &global_block_count.to_string(),
+        ) != "-1"
+        {
+            error!(
+                "Global invetory entry already present for height={}",
+                global_block_count
+            );
+            panic!(
+                "Global invetory entry already present for height={}",
+                global_block_count
+            );
+        } else {
+            save_data(
+                &block.hash,
+                &(config().db_path + &"/globalindex".to_owned()),
+                global_block_count.to_string(),
+            );
+            debug!(
+                "Inserted global inventory entry, global height={}, hash={}",
+                global_block_count, block.hash
+            );
+            save_data(
+                &block.hash,
+                &(config().db_path + &"/globalindex".to_owned()),
+                "globaltopblockhash".to_string(),
+            );
+            debug!("Updated global topblockhash");
+        }
+        debug!("block {} not in invs", block.hash);
 
         let hash = block.hash.clone();
         let chain_key_copy = block.header.chain_key.to_owned();
@@ -624,12 +673,18 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
 
         save_data(
             &block.hash,
-            &(config().db_path + &"/chaindigest".to_owned()),
+            &(config().db_path
+                + &"/chains/".to_owned()
+                + &block.header.chain_key
+                + &"-chainindex".to_owned()),
             "topblockhash".to_string(),
         );
         save_data(
             &(block.header.height + 1).to_string(),
-            &(config().db_path + &"/chaindigest".to_owned()),
+            &(config().db_path
+                + &"/chains/".to_owned()
+                + &block.header.chain_key
+                + &"-chainindex".to_owned()),
             "blockcount".to_owned(),
         );
 
@@ -647,26 +702,9 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
             return Err("failed to save sender inv".into());
         }
 
-        let block_count = get_data(config().db_path + &"/chaindigest".to_owned(), "blockcount");
-
-        if block_count == *"-1" {
-            save_data(
-                &"1".to_owned(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
-            );
-            trace!("set block count, prev: -1 (not set), new: 1");
-        } else {
-            let mut bc: u64 = block_count.parse().unwrap_or_default();
-            bc += 1;
-            save_data(
-                &bc.to_string(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
-            );
-            trace!("Updated non-zero block count, new count: {}", bc);
+        for txn in block.txns {
+            txn.update_nonce()?;
         }
-
         if block.header.height == 0 {
             if save_data(
                 &"".to_owned(),
@@ -714,6 +752,71 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
     if block.block_type != BlockType::Recieve {
         // we only enact recive blocks, ignore send blocks
         return Err("tried to enact a send block".into());
+    }
+    let global_block_count_string = get_data(
+        config().db_path + &"/globalindex".to_owned(),
+        "globalblockcount",
+    );
+    let global_block_count: u64;
+    if global_block_count_string == "-1" {
+        save_data(
+            "1",
+            &(config().db_path + &"/globalindex".to_owned()),
+            "globalblockcount".to_string(),
+        );
+        global_block_count = 1;
+    } else {
+        if let Ok(global_block_count_int) = global_block_count_string.parse::<u64>() {
+            save_data(
+                &(global_block_count_int + 1).to_string(),
+                &(config().db_path + &"/globalindex".to_owned()),
+                "globalblockcount".to_string(),
+            );
+            debug!(
+                "Incremented global block count: old={}, new={}",
+                global_block_count_int,
+                global_block_count_int + 1
+            );
+            global_block_count = global_block_count_int + 1;
+        } else {
+            error!("Failed to parse current globalblockcount, setting to 1");
+            save_data(
+                "1",
+                &(config().db_path + &"/globalindex".to_owned()),
+                "globalblockcount".to_string(),
+            );
+            global_block_count = 1;
+        }
+    }
+    if get_data(
+        config().db_path + "/globalindex",
+        &global_block_count.to_string(),
+    ) != "-1"
+    {
+        error!(
+            "Global invetory entry already present for height={}",
+            global_block_count
+        );
+        panic!(
+            "Global invetory entry already present for height={}",
+            global_block_count
+        );
+    } else {
+        save_data(
+            &block.hash,
+            &(config().db_path + &"/globalindex".to_owned()),
+            global_block_count.to_string(),
+        );
+        debug!(
+            "Inserted global inventory entry, global height={}, hash={}",
+            global_block_count, block.hash
+        );
+        save_data(
+            &block.hash,
+            &(config().db_path + &"/globalindex".to_owned()),
+            "globaltopblockhash".to_string(),
+        );
+        debug!("Updated global topblockhash");
     }
     if get_data(
         config().db_path
@@ -763,24 +866,6 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
         trace!("Saved inv for sender: {}", block.header.chain_key);
         if inv_sender_res != 1 {
             return Err("failed to save sender inv".into());
-        }
-        let block_count = get_data(config().db_path + &"/chaindigest".to_owned(), &"blockcount");
-        if block_count == *"-1" {
-            save_data(
-                &"1".to_owned(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
-            );
-            trace!("set block count, prev: -1 (not set), new: 1");
-        } else {
-            let mut bc: u64 = block_count.parse().unwrap_or_default();
-            bc += 1;
-            save_data(
-                &bc.to_string(),
-                &(config().db_path + &"/chaindigest".to_owned()),
-                "blockcount".to_owned(),
-            );
-            trace!("Updated non-zero block count, new count: {}", bc);
         }
         if block.header.height == 0 {
             if save_data(
@@ -889,8 +974,271 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
     Ok(())
 }
 
+pub fn benchmark_block_test(block: Block) -> std::result::Result<(), BlockValidationErrors> {
+    info!("Benchmarking new block validation code");
+    let start_new = SystemTime::now();
+    let _ = check_block(block.clone())?;
+    let new_time = SystemTime::now()
+        .duration_since(start_new)
+        .expect("")
+        .as_millis();
+    let end_new = SystemTime::now();
+    let _ = check_block_old(block)?;
+    info!(
+        "New validation took: {} ms, Old validation took: {} ms",
+        new_time,
+        SystemTime::now()
+            .duration_since(end_new)
+            .expect("")
+            .as_millis()
+    );
+    Ok(())
+}
+
+pub fn check_block(block: Block) -> std::result::Result<(), BlockValidationErrors> {
+    let start_time = SystemTime::now();
+    let config = config();
+    // check if the block version is supported
+    match format!(
+        "{}{}",
+        block.header.version_major, block.header.version_breaking
+    )
+    .parse::<u64>()
+    {
+        Ok(block_version) => {
+            match format!("{}{}", config.version_major, config.version_breaking).parse::<u64>() {
+                Ok(our_block_version) => {
+                    if our_block_version < block_version {
+                        return Err(BlockValidationErrors::VersionTooNew);
+                    } // else: continue
+                }
+                Err(_) => return Err(BlockValidationErrors::Other),
+            }
+        }
+        Err(_) => return Err(BlockValidationErrors::Other),
+    }
+    // now if that did not return Err() check if the network tag is correct
+    if config.network_id != block.header.network {
+        return Err(BlockValidationErrors::NetworkMissmatch);
+    }
+    // Now we check the hash of the block, by recomputing it
+    let computed_hash = block.hash_return();
+    if computed_hash != block.hash {
+        debug!(
+            "Block hash missmatch, expected={}, computed={}",
+            block.hash, computed_hash
+        );
+        return Err(BlockValidationErrors::InvalidBlockhash);
+    }
+    // now see if we have the block saved, if so return
+    let got_block = get_block_from_raw(computed_hash);
+    if got_block == block {
+        // we have this block saved, return Ok
+        debug!(
+            "Found block with hash={} in raw-block files (during validation)",
+            block.hash
+        );
+        return Ok(());
+    } else if got_block != Block::default() {
+        // we have a block with the same hash saved, but it is not the same as this one!
+        debug!("Block Collision during validation, found block with matching hash on disk: expected={:#?}, got={:#?}", block, got_block);
+        return Err(BlockValidationErrors::BlockCollision);
+    }
+    // else: we dont have this block saved; continue
+    // check if this block is the first 'genesis' block
+    if block.header.height == 0 {
+        if block.header.prev_hash != "00000000000" {
+            debug!("Expected block at height 0 (genesis) to have previous hash of 00000000000");
+            return Err(BlockValidationErrors::InvalidPreviousBlockhash);
+        }
+        // check if the genesis block is in our hardcoded  genesis blocks (for the avrio swap, please see the WIKI for more details)
+        match get_genesis_block(&block.hash) {
+            Ok(_) => {
+                // We have already checked the hash of this block, so if there is a hardcoded genesis block with the same hash they must be equal
+                debug!("Found hardcoded genesis block with correct hash (hash={}) while validating block", block.hash);
+            }
+            Err(e) => {
+                // we got an error while trying to get the hardcoded genesis block
+                // if this error is GenesisBlockErrors::BlockNotFound we can safley continue and know this genesis block is dynamic (not hardcoded)
+                match e {
+                    GenesisBlockErrors::BlockNotFound => {
+                        debug!("Block with hash={} not found in hardcoded genesis blocks, assuming dynamic", block.hash);
+                    }
+                    _ => {
+                        error!("Got error {:?} while trying to check hardcoded genesis blocks for hash {}", e, block.hash);
+                        return Err(BlockValidationErrors::FailedToGetGenesisBlock);
+                    }
+                }
+            }
+        }
+        // if we got here then the genesis block was not found in the hardcoded list BUT there was no error in checking so, continue validation
+        match get_account(&block.header.chain_key) {
+            Ok(acc) => {
+                if acc != Account::default() {
+                    debug!("Validating genesis block with hash={} for chain={}, account already exists (got account not default)", block.hash, block.header.chain_key);
+                    return Err(BlockValidationErrors::AccountExists);
+                }
+            }
+            Err(e) => {
+                if e != 0 {
+                    // 0 = account file not found
+                    error!(
+                        "Failed to get account {} while checking if exists, error code={}",
+                        block.header.chain_key, e
+                    );
+                    return Err(BlockValidationErrors::FailedToGetAccount(e));
+                }
+            }
+        };
+        // now check if the block is a send block (as height == 0) and the send_block feild is None
+        if block.block_type != BlockType::Send || !block.send_block.is_none() {
+            return Err(BlockValidationErrors::GenesisNotSendBlock);
+        }
+        // because this is a dynamic genesis block it cannot have any transactions in, check that
+        if block.txns.len() != 0 {
+            return Err(BlockValidationErrors::TransactionCountNotZero);
+        }
+        // now finally as this genesis block is dynamic we need to check the signature
+        if block.valid_signature() {
+            debug!(
+                "Signature={} on block with hash={} (signer={}) valid",
+                block.signature, block.hash, block.header.chain_key
+            );
+            return Ok(());
+        } else {
+            error!(
+                "Signature={} on block with hash={} (signer={}) invalid",
+                block.signature, block.hash, block.header.chain_key
+            );
+            return Err(BlockValidationErrors::BadSignature);
+        }
+    } else {
+        // Not a genesis block
+        match get_account(&block.header.chain_key) {
+            Ok(acc) => {
+                if acc == Account::default() {
+                    debug!("Validating block with hash={} for chain={}, account does not exist (got account default)", block.hash, block.header.chain_key);
+                    return Err(BlockValidationErrors::AccountDoesNotExist);
+                }
+            }
+            Err(e) => {
+                error!(
+                    "Failed to get account {} while checking if exists, error code={}",
+                    block.header.chain_key, e
+                );
+                return Err(BlockValidationErrors::FailedToGetAccount(e));
+            }
+        };
+        // get previous block
+        let got_block = get_block(&block.header.chain_key, block.header.height - 1);
+        if got_block == Block::default() {
+            error!("Cannot find block at height={} for chain={} with hash={} (while validating block with hash={})", block.header.height, block.header.chain_key, block.header.prev_hash, block.hash);
+            return Err(BlockValidationErrors::PreviousBlockDoesNotExist);
+        } else if got_block.hash != block.header.prev_hash {
+            error!(
+                "Previous block hash missmatch, expected={}, got={}",
+                block.header.prev_hash, got_block.hash
+            );
+            return Err(BlockValidationErrors::InvalidPreviousBlockhash);
+        }
+        // else: the previous block exists and has the correct hash
+        // check timestamp of block
+        if block.header.timestamp < got_block.header.timestamp {
+            error!("Block with hash={} older than parent block with hash={}, block_timestamp={}, parent_timestamp={}", block.hash, got_block.hash, block.header.timestamp, got_block.header.timestamp);
+        } else if block.header.timestamp - (config.transaction_timestamp_max_offset as u64)
+            > (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as u64)
+        {
+            error!(
+                "Block with hash={} is too far in the future, transaction_timestamp_max_offset={}, block_timestamp={}, delta_timestamp={}, our_time={}", 
+                block.hash,
+                config.transaction_timestamp_max_offset,
+                block.header.timestamp, block.header.timestamp - (config.transaction_timestamp_max_offset as u64),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_millis()
+            );
+            return Err(BlockValidationErrors::BlockTooFarInTheFuture);
+        }
+        //check the block has at most 10 transactions in it
+        if block.txns.len() > 10 {
+            return Err(BlockValidationErrors::TooManyTxn);
+        } else if std::mem::size_of_val(&block) > 2048000 {
+            // check the block is no larger than 2mb
+            return Err(BlockValidationErrors::BlockTooLarge);
+        }
+        if block.block_type == BlockType::Send {
+            // check if the block has a valid signature
+            if !block.valid_signature() {
+                return Err(BlockValidationErrors::BadSignature);
+            }
+            // for every transaction in the block...
+            for txn in &block.txns {
+                // check if the txn is valid
+                if let Err(txn_validation_error) = txn.valid() {
+                    error!(
+                        "Validating transaction {} in block {} gave error {:?}",
+                        txn.hash, block.hash, txn_validation_error
+                    );
+                    return Err(BlockValidationErrors::InvalidTransaction(
+                        txn_validation_error,
+                    ));
+                    // check the sender of the txn is the creator of this block
+                } else if txn.sender_key != block.header.chain_key {
+                    error!("Transaction {} in block {} has sender key {} but block has a sender/chain key of {}", txn.hash, block.hash, txn.receive_key, block.header.chain_key);
+                    return Err(BlockValidationErrors::TransactionFromWrongChain);
+                }
+            }
+        } else {
+            if let Some(send_block_hash) = block.send_block {
+                // get the corosponding send block for this recieve block
+                let got_send_block = get_block_from_raw(send_block_hash);
+                // If the block is default it is not found
+                if got_send_block == Block::default() {
+                    error!("Cannot find send block with hash");
+                    return Err(BlockValidationErrors::SendBlockNotFound);
+                } else if got_send_block.block_type != BlockType::Send {
+                    // check if the claimed send block is really a send block
+                    error!("Block with hash={} claims to be recieve block of {}, but it is a recieve block", block.hash, got_send_block.hash);
+                    return Err(BlockValidationErrors::SendBlockWrongType);
+                }
+                // for every transaction in the block...
+                for txn in &block.txns {
+                    if !got_send_block.txns.contains(txn) {
+                        // check if the transaction is in the send block for this block
+                        error!(
+                            "Transaction {} not found in send block {} (recieve block {} invalid)",
+                            txn.hash, got_send_block.hash, block.hash
+                        );
+                        return Err(BlockValidationErrors::TransactionsNotInSendBlock);
+                    } else if txn.receive_key != block.header.chain_key {
+                        // check the recieve key of the transaction is the creator of this block (block.header.chain_key)
+                        error!("Transaction {} in block {} has recieve key {} but block has a sender/chain key of {}", txn.hash, block.hash, txn.receive_key, block.header.chain_key);
+                        return Err(BlockValidationErrors::TransactionFromWrongChain);
+                    }
+                }
+            } else {
+                // All recieve blocks should have the send_block field set to Some() value
+                return Err(BlockValidationErrors::SendBlockEmpty);
+            }
+        }
+    }
+    // all checks complete, this block must be valid
+    debug!(
+        "Block {} valid, took {} ms",
+        block.hash,
+        SystemTime::now()
+            .duration_since(start_time)
+            .expect("time went backwars ono")
+            .as_millis()
+    );
+    Ok(())
+}
 /// Checks if a block is valid returns a blockValidationErrors
-pub fn check_block(blk: Block) -> std::result::Result<(), BlockValidationErrors> {
+pub fn check_block_old(blk: Block) -> std::result::Result<(), BlockValidationErrors> {
     let got_block = get_block_from_raw(blk.hash.clone()); // try to read this block from disk, if it is saved it is assumed to already have been vaildated and hence is not revalidated
     if got_block == blk {
         // we have this block stored as a raw file (its valid)
@@ -1047,11 +1395,9 @@ pub fn check_block(blk: Block) -> std::result::Result<(), BlockValidationErrors>
             }
             for txn in blk.txns {
                 // check each txn in the block is valid
-                if let Err(e) = txn.valid(blk.block_type == BlockType::Recieve) {
+                if let Err(e) = txn.valid() {
                     return Err(BlockValidationErrors::InvalidTransaction(e));
-                } /*else { removed as this will return prematurley and result in only the first txn being validated
-                      return Ok(());
-                  }*/
+                }
             }
             Ok(()) // if you got here there are no issues
         }
@@ -1059,8 +1405,14 @@ pub fn check_block(blk: Block) -> std::result::Result<(), BlockValidationErrors>
         Err(BlockValidationErrors::BlockExists) // this block already exists
     }
 }
+pub fn from_compact(encoded: String) -> Result<Block, Box<dyn std::error::Error>> {
+    let mut ret = Block::default();
+    ret.decode_compressed(encoded)?;
+    Ok(ret)
+}
 
 //todo write commentaion/docs for tests
+pub mod encode;
 pub mod genesis;
 #[cfg(test)]
 mod tests {

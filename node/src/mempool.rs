@@ -1,7 +1,7 @@
-use std::sync::Mutex;
+use std::{net::SocketAddr, sync::Mutex};
 extern crate avrio_blockchain;
-use avrio_blockchain::Block;
-use log::{debug, error, info, trace, warn};
+use avrio_blockchain::{check_block, enact_block, enact_send, save_block, Block, BlockType};
+use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -15,18 +15,17 @@ use std::io::prelude::*;
 /// The time a block can be in the mempool before being removed
 const MEMPOOL_ENTRY_EXPIREY_TIME: u64 = (3 * 60) * 1000; // 3hr
 
-/// Time (in ms) beetween mempool "purges" (Removing blocks that have been in the mempool for over MEMPOOL_ENTRY_EXPIREY_TIME ms)
-const PURGE_EVERY: u64 = 6000000; // 10 mins
+/// Time (in ms) beetween mempool "purges" (Removing blocks that have been in the mempool for over MEMPOOL_ENTRY_EXPIREY_TIME ms) & enact now valid blocks
+const PURGE_EVERY: u64 = 5000; // 5 secconds
 
 #[derive(Debug, PartialEq, Clone)]
 enum MempoolState {
     Initialized,
     Uninitialized,
-    ShuttingDown,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Mempool {
+pub struct Mempool {
     blocks: HashMap<String, (Block, SystemTime)>,
     #[serde(skip)]
     init: MempoolState,
@@ -35,9 +34,19 @@ struct Mempool {
     #[serde(skip)]
     purge_stream: Option<mpsc::Sender<String>>,
 }
+pub struct Caller {
+    pub callback: Box<dyn Fn(SocketAddr, Block) + Send>,
+    pub rec_from: SocketAddr,
+}
+
+impl Caller {
+    pub fn call(&self, blk: Block) {
+        (self.callback)(self.rec_from, blk)
+    }
+}
 
 lazy_static! {
-    pub static ref MEMPOOL: Mutex<HashMap<String, (Block, SystemTime)>> =
+    pub static ref MEMPOOL: Mutex<HashMap<String, (Block, SystemTime, Option<Caller>)>> =
         Mutex::new(HashMap::new());
 }
 
@@ -58,13 +67,16 @@ impl Default for MempoolState {
     }
 }
 
-pub fn add_block(blk: &Block) -> Result<(), Box<dyn std::error::Error>> {
+pub fn add_block(blk: &Block, callback: Caller) -> Result<(), Box<dyn std::error::Error>> {
     let mut map = MEMPOOL.lock()?;
     if map.contains_key(&blk.hash) {
         Err("block already in mempool".into())
     } else {
         if !map.contains_key(&blk.hash) {
-            map.insert(blk.hash.clone(), (blk.clone(), SystemTime::now()));
+            map.insert(
+                blk.hash.clone(),
+                (blk.clone(), SystemTime::now(), Some(callback)),
+            );
         }
         Ok(())
     }
@@ -81,7 +93,7 @@ pub fn remove_block(hash: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn get_block(hash: &str) -> Result<Block, Box<dyn std::error::Error>> {
     let map = MEMPOOL.lock()?;
-    for (b, _) in map.values() {
+    for (b, _, _) in map.values() {
         if b.hash == hash {
             return Ok(b.clone());
         }
@@ -104,11 +116,18 @@ impl Mempool {
         mem
     }
     pub fn load(&self) -> Result<(), Box<dyn std::error::Error>> {
-        *MEMPOOL.lock()? = self.blocks.clone();
+        let mut to_set: HashMap<String, (Block, SystemTime, Option<Caller>)> = HashMap::new();
+        for (key, (block, time)) in self.blocks.clone().iter() {
+            to_set.insert(key.clone(), (block.clone(), time.clone(), None));
+        }
+        *MEMPOOL.lock()? = to_set;
         Ok(())
     }
     pub fn save(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.blocks = MEMPOOL.lock()?.clone();
+        for (key, (block, time, _)) in MEMPOOL.lock()?.iter() {
+            self.blocks
+                .insert(key.clone(), (block.clone(), time.clone()));
+        }
         Ok(())
     }
     pub fn purge_worker(
@@ -175,7 +194,11 @@ impl Mempool {
         Ok(res)
     }
 
-    pub fn add_block(&mut self, blk: &Block) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn add_block(
+        &mut self,
+        blk: &Block,
+        caller: Caller,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if self.init != MempoolState::Initialized {
             return Err("mempool not initalised".into());
         }
@@ -183,7 +206,10 @@ impl Mempool {
         if map.contains_key(&blk.hash) {
             Err("block already in mempool".into())
         } else {
-            map.insert(blk.hash.clone(), (blk.clone(), SystemTime::now()));
+            map.insert(
+                blk.hash.clone(),
+                (blk.clone(), SystemTime::now(), Some(caller)),
+            );
             if !self.blocks.contains_key(&blk.hash) {
                 self.blocks
                     .insert(blk.hash.clone(), (blk.clone(), SystemTime::now()));
@@ -215,25 +241,58 @@ impl Mempool {
         let now = SystemTime::now();
         let mut map = MEMPOOL.lock()?;
         let mut to_remove: Vec<(String, String)> = vec![];
-        for (k, v) in map.iter_mut() {
-            if avrio_blockchain::check_block(v.0.clone()).is_ok() {
-                let e_res = avrio_blockchain::save_block(v.0.clone());
-                if e_res.is_ok() {
-                    if let Err(enact_res) = avrio_blockchain::enact_block(v.0.clone()) {
+        let mut blocks_to_check: HashMap<String, ()> = HashMap::new(); // Contains the list of hashes of send blocks that now have at least one corrosponding recieve block
+        for (k, v) in map.iter() {
+            if v.0.block_type == BlockType::Recieve {
+                if !blocks_to_check.contains_key(v.0.send_block.as_ref().unwrap()) {
+                    // add this block and to the hashmap of send block hashes that can be enacted
+                    blocks_to_check.insert(v.0.send_block.as_ref().unwrap().to_owned(), ());
+                    blocks_to_check.insert(v.0.hash.to_owned(), ());
+                }
+            }
+            if now.duration_since(v.1)?.as_millis() as u64 >= MEMPOOL_ENTRY_EXPIREY_TIME {
+                to_remove.push((k.clone(), "timed out".to_owned()));
+            }
+        }
+        for (k, _) in blocks_to_check.iter() {
+            if map.contains_key(k) {
+                let block = map[k].0.clone();
+                let check_result = check_block(block.clone());
+                if check_result.is_ok() {
+                    let e_res = save_block(block.clone());
+                    if e_res.is_ok() {
+                        if block.block_type == BlockType::Recieve {
+                            if let Err(enact_res) = enact_block(block.clone()) {
+                                error!(
+                                "Failed to enact saved & valid block from mempool. Gave error: {}",
+                                enact_res
+                            );
+                            }
+                        } else {
+                            if let Err(enact_res) = enact_send(block.clone()) {
+                                error!(
+                                "Failed to enact saved & valid block from mempool. Gave error: {}",
+                                enact_res
+                            );
+                            }
+                        }
+                    } else {
                         error!(
-                            "Failed to enact saved & valid block from mempool. Gave error: {}",
-                            enact_res
+                            "Failed to save validated block from mempool. Gave error: {}",
+                            e_res.unwrap_err()
                         );
                     }
+                    to_remove.push((k.clone(), "enacted".to_owned()));
+                    if let Some(callback) = &map[k].2 {
+                        callback.call(block);
+                    }
                 } else {
-                    error!(
-                        "Failed to save validated block from mempool. Gave error: {}",
-                        e_res.unwrap_err()
+                    log::debug!(
+                        "Block {} in block_to_check invalid, reason={:?}",
+                        k,
+                        check_result.unwrap_err()
                     );
                 }
-                to_remove.push((k.clone(), "enacted".to_owned()));
-            } else if now.duration_since(v.1)?.as_millis() as u64 >= MEMPOOL_ENTRY_EXPIREY_TIME {
-                to_remove.push((k.clone(), "timed out".to_owned()));
             }
         }
         let set: std::collections::HashSet<_> = to_remove.drain(..).collect(); // dedup
@@ -246,7 +305,7 @@ impl Mempool {
         Ok(())
     }
 
-    pub fn shutdown(self) -> Result<(), Box<(dyn std::error::Error)>> {
+    pub fn shutdown(&self) -> Result<(), Box<(dyn std::error::Error)>> {
         if self.init != MempoolState::Initialized {
             return Err("mempool not initalised".into());
         } else {

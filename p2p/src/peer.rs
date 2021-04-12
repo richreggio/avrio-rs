@@ -42,13 +42,16 @@ pub fn get_peers_addr() -> Result<Vec<SocketAddr>, Box<dyn Error>> {
     let iter = val.iter();
 
     for peer in iter {
-        peers.push(peer.peer_addr()?)
+        if let Ok(peer_addr) = peer.peer_addr() {
+            peers.push(peer_addr);
+        }
     }
     let val = OUTGOING.lock()?;
     let iter = val.iter();
-
     for peer in iter {
-        peers.push(peer.peer_addr()?)
+        if let Ok(peer_addr) = peer.peer_addr() {
+            peers.push(peer_addr);
+        }
     }
 
     Ok(peers)
@@ -58,8 +61,8 @@ pub fn get_peers_addr() -> Result<Vec<SocketAddr>, Box<dyn Error>> {
 /// returns a resut value conatining a bool value.
 /// If the peer is in either INCOMING or OUTGOING it will be true
 pub fn in_peers(peer: &std::net::SocketAddr) -> Result<bool, Box<dyn Error>> {
-    for p in get_peers()? {
-        if strip_port(&p.peer_addr()?) == strip_port(peer) {
+    for p in get_peers_addr()? {
+        if strip_port(&p) == strip_port(peer) {
             return Ok(true);
         }
     }
@@ -80,6 +83,36 @@ pub fn add_peer(
         let _ = (*INCOMING.lock()?).push(peer);
     } else {
         let _ = (*OUTGOING.lock()?).push(peer);
+    }
+    Ok(())
+}
+
+pub fn remove_peer(peer: SocketAddr, is_incoming: bool) -> Result<(), Box<dyn Error>> {
+    (*PEERS.lock()?).remove(&strip_port(&peer));
+    if is_incoming {
+        let mut new_incoming: Vec<TcpStream> = vec![];
+        for incoming in &(*INCOMING.lock()?) {
+            if let Ok(trying_peer_addr) = &incoming.peer_addr() {
+                if strip_port(trying_peer_addr) != strip_port(&peer) {
+                    let stream = incoming.try_clone()?;
+                    new_incoming.push(stream);
+                }
+            } // if we failed to get the addr of the stream, assume it is disconnected and remove (eg dont add it) it as well
+        }
+        // now set the INCOMING to the new_incoming vec
+        *INCOMING.lock()? = new_incoming;
+    } else {
+        let mut new_outgoing: Vec<TcpStream> = vec![];
+        for outgoing in &(*OUTGOING.lock()?) {
+            if let Ok(trying_peer_addr) = &outgoing.peer_addr() {
+                if strip_port(trying_peer_addr) != strip_port(&peer) {
+                    let stream = outgoing.try_clone()?;
+                    new_outgoing.push(stream);
+                }
+            } // if we failed to get the addr of the stream, assume it is disconnected and remove (eg dont add it) it as well
+        }
+        // now set the OUTGOING to the new_outgoing vec
+        *OUTGOING.lock()? = new_outgoing;
     }
     Ok(())
 }

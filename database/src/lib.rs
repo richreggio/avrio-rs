@@ -44,18 +44,20 @@ struct PeerlistSave {
     peers: Vec<String>,
 }
 pub fn close_flush_stream() {
-    info!("Shutting down dirty page flusher stream");
-    if let Some(sender) = FLUSH_STREAM_HANDLER.lock().unwrap().clone() {
-        if let Err(e) = sender.send("stop".to_string()) {
-            error!(
+    if CACHE_VALUES {
+        info!("Shutting down dirty page flusher stream");
+        if let Some(sender) = FLUSH_STREAM_HANDLER.lock().unwrap().clone() {
+            if let Err(e) = sender.send("stop".to_string()) {
+                error!(
                 "CRITICAL: failed to send stop message to dirty data flush stream. Got error={}",
                 e
             );
+            } else {
+                info!("Safley shut down dirty data flush stream!");
+            }
         } else {
-            info!("Safley shut down dirty data flush stream!");
+            error!("Called close_flush_stream() but failed to get access to FLUSH_STRAM_HANDLER");
         }
-    } else {
-        error!("Called close_flsuh_stream() but failed to get access to FLUSH_STRAM_HANDLER");
     }
 }
 
@@ -529,10 +531,7 @@ pub fn save_data(serialized: &str, path: &str, key: String) -> u8 {
 }
 
 pub fn get_peerlist() -> std::result::Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
-    let peers_db = open_database(config().db_path + &"/peers".to_string()).unwrap();
-    let s = get_data_from_database(&peers_db, &"white");
-
-    drop(peers_db);
+    let s = get_data(config().db_path + &"/peers".to_string(), &"white");
 
     if s == *"-1" {
         Err("peerlist not found".into())
@@ -559,10 +558,10 @@ pub fn add_peer(peer: SocketAddr) -> std::result::Result<(), Box<dyn std::error:
 }
 
 pub fn save_peerlist(list: &[SocketAddr]) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut as_string: Vec<String> = vec![];
+    let mut as_string: PeerlistSave = PeerlistSave { peers: vec![] };
 
     for peer in list {
-        as_string.push(peer.to_string());
+        as_string.peers.push(peer.to_string());
     }
 
     let s = serde_json::to_string(&as_string)?;

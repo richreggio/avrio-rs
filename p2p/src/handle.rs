@@ -182,7 +182,7 @@ pub fn launch_handle_client(
                                                 if tries == MAX_TRIES {
                                                     // close the stream
                                                     info!("Disonnected to peer {}, {} incorrect responses to PONG", stream.peer_addr()
-                                                        .unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)), MAX_TRIES
+                                                        .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)), MAX_TRIES
                                                     );
                                                     let _ = send("".to_string(), &mut stream, 0xff, true, None);
                                                     thread::sleep(Duration::from_micros(1000));
@@ -230,7 +230,7 @@ pub fn launch_handle_client(
                         }
                     }
                 }
-                if to_process_after_ping.len() != 0 {
+                if !to_process_after_ping.is_empty() {
                     debug!(
                         "{} messages to process in to_process_after_ping vec",
                         to_process_after_ping.len()
@@ -273,7 +273,7 @@ pub fn process_handle_msg(
         0xff => {
             // shutdown
             info!("Disconnected to peer {}, connection closed by peer", stream.peer_addr()
-                .unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
+                .unwrap_or_else(|_| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
             );
             let _ = remove_peer(stream.peer_addr().unwrap(), true);
             let _ = remove_peer(stream.peer_addr().unwrap(), false);
@@ -373,7 +373,7 @@ pub fn process_handle_msg(
                 stream.peer_addr().expect("Could not get addr for peer")
             );
 
-            if let Ok(db) = open_database(config_db_path() + "/chainlist") {
+            if let Ok(db) = open_database(&(config_db_path() + "/chainlist")) {
                 
                 let mut chains: Vec<String> = vec![];
 

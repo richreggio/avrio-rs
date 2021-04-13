@@ -220,7 +220,7 @@ pub fn validate_vrf(public_key: String, proof: String, message: String) -> bool 
         if let Ok(pi) = bs58::decode(proof).into_vec() {
             if let Ok(msg_vec) = bs58::decode(message).into_vec() {
                 if let Ok(pubkey) = bs58::decode(public_key).into_vec() {
-                    if let Ok(_) = vrf.verify(&pubkey, &pi, &msg_vec) {
+                    if vrf.verify(&pubkey, &pi, &msg_vec).is_ok() {
                         return true;
                     }
                 }

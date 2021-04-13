@@ -118,15 +118,14 @@ impl Mempool {
     pub fn load(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut to_set: HashMap<String, (Block, SystemTime, Option<Caller>)> = HashMap::new();
         for (key, (block, time)) in self.blocks.clone().iter() {
-            to_set.insert(key.clone(), (block.clone(), time.clone(), None));
+            to_set.insert(key.clone(), (block.clone(), *time, None));
         }
         *MEMPOOL.lock()? = to_set;
         Ok(())
     }
     pub fn save(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         for (key, (block, time, _)) in MEMPOOL.lock()?.iter() {
-            self.blocks
-                .insert(key.clone(), (block.clone(), time.clone()));
+            self.blocks.insert(key.clone(), (block.clone(), *time));
         }
         Ok(())
     }
@@ -243,13 +242,14 @@ impl Mempool {
         let mut to_remove: Vec<(String, String)> = vec![];
         let mut blocks_to_check: HashMap<String, ()> = HashMap::new(); // Contains the list of hashes of send blocks that now have at least one corrosponding recieve block
         for (k, v) in map.iter() {
-            if v.0.block_type == BlockType::Recieve {
-                if !blocks_to_check.contains_key(v.0.send_block.as_ref().unwrap()) {
-                    // add this block and to the hashmap of send block hashes that can be enacted
-                    blocks_to_check.insert(v.0.send_block.as_ref().unwrap().to_owned(), ());
-                    blocks_to_check.insert(v.0.hash.to_owned(), ());
-                }
+            if v.0.block_type == BlockType::Recieve
+                && !blocks_to_check.contains_key(v.0.send_block.as_ref().unwrap())
+            {
+                // add this block and to the hashmap of send block hashes that can be enacted
+                blocks_to_check.insert(v.0.send_block.as_ref().unwrap().to_owned(), ());
+                blocks_to_check.insert(v.0.hash.to_owned(), ());
             }
+
             if now.duration_since(v.1)?.as_millis() as u64 >= MEMPOOL_ENTRY_EXPIREY_TIME {
                 to_remove.push((k.clone(), "timed out".to_owned()));
             }
@@ -268,13 +268,11 @@ impl Mempool {
                                 enact_res
                             );
                             }
-                        } else {
-                            if let Err(enact_res) = enact_send(block.clone()) {
-                                error!(
+                        } else if let Err(enact_res) = enact_send(block.clone()) {
+                            error!(
                                 "Failed to enact saved & valid block from mempool. Gave error: {}",
                                 enact_res
                             );
-                            }
                         }
                     } else {
                         error!(
@@ -319,7 +317,6 @@ impl Mempool {
                 self.save_to_disk(&format!("{}/mempool", config().db_path))?;
                 info!("Saved mempool to disk");
                 info!("Unalloticating self");
-                drop(self);
             } else {
                 error!("No purge stream transmiter in mempool, aborting");
                 return Err("no purge stream transmitter".into());

@@ -121,14 +121,13 @@ pub fn launch_client(
         server_port
     );
     if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", server_ip, server_port)) {
-        if let Ok(_) = stream.write(b"init") {
+        if stream.write(b"init").is_ok() {
             debug!("Sent init message to server");
             let mut buf = [0u8; 1024];
             if services.is_empty() {
                 // use all services we can discard the read bytes
-                if let Ok(_) = stream.read(&mut buf) {
-                    drop(buf);
-                    if let Ok(_) = stream.write(b"*") {
+                if stream.read(&mut buf).is_ok() {
+                    if stream.write(b"*").is_ok() {
                         debug!("Sent services register command (*=all)");
                         info!("Connected to RPC server at 127.0.0.1:{}", server_port);
                         let _loop_thread_handle = std::thread::spawn(move || loop {
@@ -229,7 +228,7 @@ pub fn launch_client(
         error!("Failed to connect to server");
         return Err("Failed to connect to server".into());
     }
-    return Err("reached end of function".into());
+    Err("reached end of function".into())
 }
 
 pub fn launch(port: u64) {
@@ -237,67 +236,57 @@ pub fn launch(port: u64) {
     let bind_res = std::net::TcpListener::bind(format!("127.0.0.1:{}", port));
     if let Ok(listener) = bind_res {
         log::info!("RPC Server bound to 127.0.0.1:{}", port);
-        for stream in listener.incoming() {
-            match stream {
-                Ok(mut stream) => {
-                    log::trace!("New incoming stream");
-                    let mut hi_buffer = [0u8; 128];
-                    if let Ok(read_bytes) = stream.read(&mut hi_buffer) {
-                        // turn the buf into a string
-                        let hi_string = String::from_utf8(hi_buffer[0..read_bytes].to_vec())
-                            .unwrap_or_default();
-                        if hi_string == "init" {
-                            let services_list = ["block".to_string()]; // TODO: move to config
-                            let services_list_ser =
-                                serde_json::to_string(&services_list).unwrap_or_default();
-                            if let Ok(_) = stream.write(services_list_ser.as_bytes()) {
-                                let mut register_buffer = [0u8; 128];
-                                if let Ok(read_bytes) = stream.read(&mut register_buffer) {
-                                    let register_string =
-                                        String::from_utf8(register_buffer[0..read_bytes].to_vec())
-                                            .unwrap_or_default();
-                                    let mut registered_services: Vec<String> = vec![];
-                                    if register_string == "*" {
-                                        registered_services = services_list.to_vec();
-                                    } else {
-                                        let register_services_vec: Vec<String> =
-                                            serde_json::from_str(&register_string)
-                                                .unwrap_or_default();
-                                        for serv in register_services_vec {
-                                            if services_list.contains(&serv) {
-                                                registered_services.push(serv);
-                                            }
+        for mut stream in listener.incoming().flatten() {
+            log::trace!("New incoming stream");
+            let mut hi_buffer = [0u8; 128];
+            if let Ok(read_bytes) = stream.read(&mut hi_buffer) {
+                // turn the buf into a string
+                let hi_string =
+                    String::from_utf8(hi_buffer[0..read_bytes].to_vec()).unwrap_or_default();
+                if hi_string == "init" {
+                    let services_list = ["block".to_string()]; // TODO: move to config
+                    let services_list_ser =
+                        serde_json::to_string(&services_list).unwrap_or_default();
+                    if stream.write(services_list_ser.as_bytes()).is_ok() {
+                        let mut register_buffer = [0u8; 128];
+                        if let Ok(read_bytes) = stream.read(&mut register_buffer) {
+                            let register_string =
+                                String::from_utf8(register_buffer[0..read_bytes].to_vec())
+                                    .unwrap_or_default();
+                            let mut registered_services: Vec<String> = vec![];
+                            if register_string == "*" {
+                                registered_services = services_list.to_vec();
+                            } else {
+                                let register_services_vec: Vec<String> =
+                                    serde_json::from_str(&register_string).unwrap_or_default();
+                                for serv in register_services_vec {
+                                    if services_list.contains(&serv) {
+                                        registered_services.push(serv);
+                                    }
+                                }
+                            }
+                            if registered_services.is_empty() {
+                                let _ = stream.write(b"end");
+                                return;
+                            } else {
+                                // add the peer to the LAZY static
+                                if let Ok(mut connections_lock) = CONNECTIONS.lock() {
+                                    let connections_vec = &mut (*connections_lock);
+                                    connections_vec.push((stream, registered_services));
+                                    let mut new_connections_vec: Vec<(TcpStream, Vec<String>)> =
+                                        vec![];
+                                    for (stream, registered_services) in connections_vec {
+                                        if let Ok(new_stream) = stream.try_clone() {
+                                            new_connections_vec
+                                                .push((new_stream, registered_services.clone()));
                                         }
                                     }
-                                    if registered_services.len() == 0 {
-                                        let _ = stream.write(b"end");
-                                        return;
-                                    } else {
-                                        // add the peer to the LAZY static
-                                        if let Ok(mut connections_lock) = CONNECTIONS.lock() {
-                                            let connections_vec = &mut (*connections_lock);
-                                            connections_vec.push((stream, registered_services));
-                                            let mut new_connections_vec: Vec<(
-                                                TcpStream,
-                                                Vec<String>,
-                                            )> = vec![];
-                                            for (stream, registered_services) in connections_vec {
-                                                if let Ok(new_stream) = stream.try_clone() {
-                                                    new_connections_vec.push((
-                                                        new_stream,
-                                                        registered_services.clone(),
-                                                    ));
-                                                }
-                                            }
-                                            *connections_lock = new_connections_vec;
-                                        }
-                                    }
+                                    *connections_lock = new_connections_vec;
                                 }
                             }
                         }
                     }
                 }
-                Err(_) => {}
             }
         }
     }

@@ -5,7 +5,7 @@ extern crate avrio_config;
 extern crate bs58;
 use avrio_config::{config, config_db_path};
 extern crate rand;
-use avrio_database::{get_data, save_data};
+use avrio_database::get_data;
 
 use ring::signature;
 
@@ -117,7 +117,7 @@ impl Transaction {
         trace!("Setting txn count");
         if avrio_database::save_data(&(txn_count + 1).to_string(), &chain_index_db, "txncount") != 1
         {
-            return Err("failed to update send acc nonce".into());
+            Err("failed to update send acc nonce".into())
         } else {
             trace!(
                 "Updated account nonce (txn count) for account: {}, prev: {}, new: {}",
@@ -125,8 +125,8 @@ impl Transaction {
                 txn_count,
                 txn_count + 1
             );
-            return Ok(());
-        };
+            Ok(())
+        }
     }
 
     pub fn enact(&self, _chain_index_db: &str) -> std::result::Result<(), Box<dyn error::Error>> {
@@ -423,7 +423,7 @@ impl Transaction {
         }
         if self.access_key.is_empty() {
             // eg if it was sent using the 'main' wallet
-            match bs58::decode(&sender_account.public_key.to_owned()).into_vec() {
+            match bs58::decode(&sender_account.public_key).into_vec() {
                 // decode the base58 encoded sender public key into a vec
                 Ok(peer_public_key_bytes) => {
                     let peer_public_key = signature::UnparsedPublicKey::new(

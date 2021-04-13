@@ -26,9 +26,11 @@ use reqwest::Client;
 use std::time::{UNIX_EPOCH, SystemTime};
 use std::error::Error;
 use avrio_crypto::Wallet;
+
 lazy_static! {
     static ref WALLET_DETAILS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
+
 #[derive(Default, Clone, Deserialize, Debug)]
 struct TxnDetails {
     pub amount: u64,
@@ -55,6 +57,7 @@ struct Transactioncount {
     success: bool,
     transaction_count: u64,
 }
+
 async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Box<dyn Error>> {
     if blk.block_type == BlockType::Recieve {
         return Err("Block is recive block already".into());
@@ -80,7 +83,7 @@ async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Bo
         blk_clone.header.prev_hash = blk.hash.clone();
         blk_clone.hash();
         blk_clone.signature = "".to_string();
-        return Ok(blk_clone);
+        Ok(blk_clone)
     } else {
         let request_url = format!(
             "http://127.0.0.1:8000/api/v1/blockcount/{}",
@@ -103,7 +106,7 @@ async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Bo
         blk_clone.header.prev_hash = response_decoded.hash;
         blk_clone.hash();
         blk_clone.signature = "".to_string();
-        return Ok(blk_clone);
+        Ok(blk_clone)
     }
 }
 
@@ -212,6 +215,7 @@ fn not_supported() -> String {
 fn must_provide_method() -> &'static str {
     "{ \"success\": false, \"error\": \"METHOD_MISSING\" }"
 }
+
 #[get("/auth/<key>")]
 pub fn auth(key: String) -> String {
     if key == "1234567890" {
@@ -314,27 +318,9 @@ pub fn get_balance_v1(chain: String) -> String {
         let balance: u64 = acc.balance;
         let locked: u64 = acc.locked;
 
-        "{ \"success\": true, ".to_owned()
-            + "\"chainkey\": \""
-            + &chain
-            + "\", "
-            + "\"balance\": "
-            + &balance.to_string()
-            + ", "
-            + "\"locked\": "
-            + &locked.to_string()
-            + " }"
+        format!("{ \"success\": true, \"chainkey\": \"{}\", \"balance\": {}, \"locked\": {} }", chain, balance, locked)
     } else {
-        "{ \"success\": false, ".to_owned()
-            + "\"chainkey\": "
-            + &chain
-            + ", "
-            + "\"balance\": "
-            + &0.to_string()
-            + ", "
-            + "\"locked\": "
-            + &0.to_string()
-            + " }"
+        format!("{ \"success\": false, \"chainkey\": \"{}\", \"balance\": 0, \"locked\": 0 }", chain)
     }
 }
 

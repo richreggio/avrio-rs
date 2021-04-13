@@ -317,7 +317,7 @@ pub fn form_state_digest(cd_db: &str) -> std::result::Result<String, Box<dyn std
     let mut _roots: Vec<(String, String)> = vec![]; // 0: chain_key, 1: chain_digest
                                                     //iter.seek_to_first();
     let _chains_list: Vec<String> = Vec::new();
-    for (chain_key_string, chain_digest_string) in open_database(cd_db.to_owned())?.iter() {
+    for (chain_key_string, chain_digest_string) in open_database(cd_db)?.iter() {
         if chain_key_string != "master"
             && chain_key_string != "blockcount"
             && chain_key_string != "topblockhash"
@@ -382,7 +382,7 @@ pub fn get_block(chain_key: &str, height: u64) -> Block {
         &(config_db_path() + "/chains/" + chain_key + "-chainindex"),
         &height.to_string(),
     );
-    if hash == *"-1" || hash == *"0" {
+    if hash == "-1" || hash == "0" {
         Block::default()
     } else {
         get_block_from_raw(hash)
@@ -396,10 +396,10 @@ pub fn get_block_from_raw(hash: String) -> Block {
         let mut contents = String::new();
         file.read_to_string(&mut contents).unwrap();
         let mut ret = Block::default();
-        if let Ok(_) = ret.decode_compressed(contents) {
-            return ret;
+        if ret.decode_compressed(contents).is_ok() {
+            ret
         } else {
-            return Block::default();
+            Block::default()
         }
     } else {
         trace!(
@@ -435,6 +435,7 @@ impl Hashable for Header {
         bytes
     }
 }
+
 impl Header {
     /// Returns the hash of the header bytes
     pub fn hash(&mut self) -> String {
@@ -453,6 +454,7 @@ impl Hashable for Block {
         bytes
     }
 }
+
 impl Block {
     pub fn is_default(&self) -> bool {
         self == &Block::default()
@@ -594,29 +596,28 @@ pub fn enact_send(block: Block) -> Result<(), Box<dyn std::error::Error>> {
                 "globalblockcount",
             );
             global_block_count = 1;
+        } else if let Ok(global_block_count_int) = global_block_count_string.parse::<u64>() {
+            save_data(
+                &(global_block_count_int + 1).to_string(),
+                &(config_db_path() + "/globalindex"),
+                "globalblockcount",
+            );
+            debug!(
+                "Incremented global block count: old={}, new={}",
+                global_block_count_int,
+                global_block_count_int + 1
+            );
+            global_block_count = global_block_count_int + 1;
         } else {
-            if let Ok(global_block_count_int) = global_block_count_string.parse::<u64>() {
-                save_data(
-                    &(global_block_count_int + 1).to_string(),
-                    &(config_db_path() + "/globalindex"),
-                    "globalblockcount",
-                );
-                debug!(
-                    "Incremented global block count: old={}, new={}",
-                    global_block_count_int,
-                    global_block_count_int + 1
-                );
-                global_block_count = global_block_count_int + 1;
-            } else {
-                error!("Failed to parse current globalblockcount, setting to 1");
-                save_data(
-                    "1",
-                    &(config_db_path() + "/globalindex"),
-                    "globalblockcount",
-                );
-                global_block_count = 1;
-            }
+            error!("Failed to parse current globalblockcount, setting to 1");
+            save_data(
+                "1",
+                &(config_db_path() + "/globalindex"),
+                "globalblockcount",
+            );
+            global_block_count = 1;
         }
+
         if get_data(
             &(config_db_path() + "/globalindex"),
             &global_block_count.to_string(),
@@ -742,29 +743,28 @@ pub fn enact_block(block: Block) -> std::result::Result<(), Box<dyn std::error::
             "globalblockcount",
         );
         global_block_count = 1;
+    } else if let Ok(global_block_count_int) = global_block_count_string.parse::<u64>() {
+        save_data(
+            &(global_block_count_int + 1).to_string(),
+            &(config_db_path() + "/globalindex"),
+            "globalblockcount",
+        );
+        debug!(
+            "Incremented global block count: old={}, new={}",
+            global_block_count_int,
+            global_block_count_int + 1
+        );
+        global_block_count = global_block_count_int + 1;
     } else {
-        if let Ok(global_block_count_int) = global_block_count_string.parse::<u64>() {
-            save_data(
-                &(global_block_count_int + 1).to_string(),
-                &(config_db_path() + "/globalindex"),
-                "globalblockcount",
-            );
-            debug!(
-                "Incremented global block count: old={}, new={}",
-                global_block_count_int,
-                global_block_count_int + 1
-            );
-            global_block_count = global_block_count_int + 1;
-        } else {
-            error!("Failed to parse current globalblockcount, setting to 1");
-            save_data(
-                "1",
-                &(config_db_path() + "/globalindex"),
-                "globalblockcount",
-            );
-            global_block_count = 1;
-        }
+        error!("Failed to parse current globalblockcount, setting to 1");
+        save_data(
+            "1",
+            &(config_db_path() + "/globalindex"),
+            "globalblockcount",
+        );
+        global_block_count = 1;
     }
+
     if get_data(
         &(config_db_path() + "/globalindex"),
         &global_block_count.to_string(),
@@ -1026,11 +1026,11 @@ pub fn check_block(block: Block) -> std::result::Result<(), BlockValidationError
             }
         };
         // now check if the block is a send block (as height == 0) and the send_block feild is None
-        if block.block_type != BlockType::Send || !block.send_block.is_none() {
+        if block.block_type != BlockType::Send || block.send_block.is_some() {
             return Err(BlockValidationErrors::GenesisNotSendBlock);
         }
         // because this is a dynamic genesis block it cannot have any transactions in, check that
-        if block.txns.len() != 0 {
+        if !block.txns.is_empty() {
             return Err(BlockValidationErrors::TransactionCountNotZero);
         }
         // now finally as this genesis block is dynamic we need to check the signature
@@ -1127,38 +1127,36 @@ pub fn check_block(block: Block) -> std::result::Result<(), BlockValidationError
                     return Err(BlockValidationErrors::TransactionFromWrongChain);
                 }
             }
-        } else {
-            if let Some(send_block_hash) = block.send_block {
-                // get the corosponding send block for this recieve block
-                let got_send_block = get_block_from_raw(send_block_hash);
-                // If the block is default it is not found
-                if got_send_block == Block::default() {
-                    error!("Cannot find send block with hash");
-                    return Err(BlockValidationErrors::SendBlockNotFound);
-                } else if got_send_block.block_type != BlockType::Send {
-                    // check if the claimed send block is really a send block
-                    error!("Block with hash={} claims to be recieve block of {}, but it is a recieve block", block.hash, got_send_block.hash);
-                    return Err(BlockValidationErrors::SendBlockWrongType);
-                }
-                // for every transaction in the block...
-                for txn in &block.txns {
-                    if !got_send_block.txns.contains(txn) {
-                        // check if the transaction is in the send block for this block
-                        error!(
-                            "Transaction {} not found in send block {} (recieve block {} invalid)",
-                            txn.hash, got_send_block.hash, block.hash
-                        );
-                        return Err(BlockValidationErrors::TransactionsNotInSendBlock);
-                    } else if txn.receive_key != block.header.chain_key {
-                        // check the recieve key of the transaction is the creator of this block (block.header.chain_key)
-                        error!("Transaction {} in block {} has recieve key {} but block has a sender/chain key of {}", txn.hash, block.hash, txn.receive_key, block.header.chain_key);
-                        return Err(BlockValidationErrors::TransactionFromWrongChain);
-                    }
-                }
-            } else {
-                // All recieve blocks should have the send_block field set to Some() value
-                return Err(BlockValidationErrors::SendBlockEmpty);
+        } else if let Some(send_block_hash) = block.send_block {
+            // get the corosponding send block for this recieve block
+            let got_send_block = get_block_from_raw(send_block_hash);
+            // If the block is default it is not found
+            if got_send_block == Block::default() {
+                error!("Cannot find send block with hash");
+                return Err(BlockValidationErrors::SendBlockNotFound);
+            } else if got_send_block.block_type != BlockType::Send {
+                // check if the claimed send block is really a send block
+                error!("Block with hash={} claims to be recieve block of {}, but it is a recieve block", block.hash, got_send_block.hash);
+                return Err(BlockValidationErrors::SendBlockWrongType);
             }
+            // for every transaction in the block...
+            for txn in &block.txns {
+                if !got_send_block.txns.contains(txn) {
+                    // check if the transaction is in the send block for this block
+                    error!(
+                        "Transaction {} not found in send block {} (recieve block {} invalid)",
+                        txn.hash, got_send_block.hash, block.hash
+                    );
+                    return Err(BlockValidationErrors::TransactionsNotInSendBlock);
+                } else if txn.receive_key != block.header.chain_key {
+                    // check the recieve key of the transaction is the creator of this block (block.header.chain_key)
+                    error!("Transaction {} in block {} has recieve key {} but block has a sender/chain key of {}", txn.hash, block.hash, txn.receive_key, block.header.chain_key);
+                    return Err(BlockValidationErrors::TransactionFromWrongChain);
+                }
+            }
+        } else {
+            // All recieve blocks should have the send_block field set to Some() value
+            return Err(BlockValidationErrors::SendBlockEmpty);
         }
     }
     // all checks complete, this block must be valid
@@ -1172,6 +1170,7 @@ pub fn check_block(block: Block) -> std::result::Result<(), BlockValidationError
     );
     Ok(())
 }
+
 /// Checks if a block is valid returns a blockValidationErrors
 pub fn check_block_old(blk: Block) -> std::result::Result<(), BlockValidationErrors> {
     let got_block = get_block_from_raw(blk.hash.clone()); // try to read this block from disk, if it is saved it is assumed to already have been vaildated and hence is not revalidated

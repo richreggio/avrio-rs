@@ -48,7 +48,7 @@ impl Block {
             self.block_type = BlockType::Recieve;
             let transactions_string: Vec<&str> = components[2].split(',').collect();
             for txn_string in transactions_string {
-                if txn_string != "" {
+                if !txn_string.is_empty() {
                     let mut txn_new = Transaction::default();
                     txn_new.decode_compressed(txn_string.to_string())?;
                     self.txns.push(txn_new);
@@ -57,8 +57,6 @@ impl Block {
             self.hash = components[3].to_string();
             self.signature = components[4].to_string();
             if components[4] == "0" {
-                self.confimed = false;
-            } else {
                 self.confimed = false;
             }
             self.node_signatures = vec![]; // TODO: read from the encoded string (currently unneeded)
@@ -69,7 +67,7 @@ impl Block {
             self.block_type = BlockType::Send;
             let transactions_string: Vec<&str> = components[1].split(',').collect();
             for txn_string in transactions_string {
-                if txn_string != "" {
+                if !txn_string.is_empty() {
                     let mut txn_new = Transaction::default();
                     txn_new.decode_compressed(txn_string.to_string())?;
                     self.txns.push(txn_new);
@@ -78,8 +76,6 @@ impl Block {
             self.hash = components[2].to_string();
             self.signature = components[3].to_string();
             if components[4] == "0" {
-                self.confimed = false;
-            } else {
                 self.confimed = false;
             }
             self.node_signatures = vec![]; // TODO: read from the encoded string (currently unneeded)
@@ -94,6 +90,7 @@ impl Block {
         Ok(())
     }
 }
+
 impl Header {
     pub fn encode_compressed(&self) -> String {
         format!(

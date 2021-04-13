@@ -32,9 +32,9 @@ pub fn to_atomc(amount: f64) -> u64 {
 
 pub fn to_dec(amount: u64) -> f64 {
     if amount == 0 {
-        return 0 as f64;
+        0 as f64
     } else {
-        return amount as f64 / (10_i64.pow(config().decimal_places as u32)) as f64;
+        amount as f64 / (10_i64.pow(config().decimal_places as u32)) as f64
         // (amount / 10000 for 4 dec places)
     }
 }

@@ -61,18 +61,18 @@ pub fn close_flush_stream() {
     }
 }
 
-pub fn open_database(path: String) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+pub fn open_database(path: &str) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
     //  gain a lock on the DATABASES lazy_sataic
     if CACHE_VALUES {
         if let Ok(database_lock) = DATABASES.lock() {
             // check if it contains a Some(x) value
             if let Some(databases) = database_lock.clone() {
                 // it does; now check if the databases hashmap contains our path (eg is this db cached)
-                if databases.contains_key(&path) {
+                if databases.contains_key(path) {
                     //  we have this database cached, read from it
                     trace!("Open database: Database cached (path={})", path);
                     let mut return_databases: HashMap<String, String> = HashMap::new();
-                    for (key, (val, _)) in databases[&path].0.clone() {
+                    for (key, (val, _)) in databases[path].0.clone() {
                         trace!("OD: key={}, val={}", key, val);
                         return_databases.insert(key, val);
                     }
@@ -96,9 +96,9 @@ pub fn open_database(path: String) -> Result<HashMap<String, String>, Box<dyn st
         }
         _ => {
             let db_hashmap = &mut *db_file_lock;
-            if db_hashmap.contains_key(&path) {
+            if db_hashmap.contains_key(path) {
                 trace!("OD: db lock cached in hashmap");
-                db = &db_hashmap[&path];
+                db = &db_hashmap[path];
             } else {
                 trace!("OD: db lock not cached in hashmap");
                 let mut opts = Options::default();
@@ -107,7 +107,7 @@ pub fn open_database(path: String) -> Result<HashMap<String, String>, Box<dyn st
                 opts.increase_parallelism(((1.0 / 3.0) * num_cpus::get() as f64) as i32);
                 db_deref = DB::open(&opts, &path).unwrap();
                 db = &db_deref;
-                let cloned_path = path.clone();
+                let cloned_path = path.into();
                 trace!("Open database, reloading cache");
                 let _ = reload_cache(vec![cloned_path], &mut db_file_lock, &mut DATABASES.lock()?);
                 trace!("Finished reloading cache, continuing");

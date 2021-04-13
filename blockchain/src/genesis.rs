@@ -123,10 +123,11 @@ pub fn generate_genesis_block(
     genesis_block.sign(&priv_key).unwrap();
     Ok(genesis_block)
 }
+
 /// Reads the genesis block for this chain from the list of blocks
 pub fn get_genesis_block(chainkey: &str) -> Result<Block, GenesisBlockErrors> {
     for block in genesis_blocks() {
-        if block.header.chain_key == *chainkey {
+        if block.header.chain_key == chainkey {
             return Ok(block);
         }
     }

@@ -13,7 +13,7 @@ use avrio_blockchain::{
     genesis::{generate_genesis_block, get_genesis_block, GenesisBlockErrors},
     Block, BlockType, Header,
 };
-use avrio_config::config;
+use avrio_config::{config, config_db_path};
 use avrio_core::{account::*, transaction::Transaction};
 use avrio_crypto::Wallet;
 use avrio_database::*;
@@ -24,7 +24,6 @@ use lazy_static::*;
 use log::*;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json;
 use std::{default::Default, sync::Mutex};
 use std::{
     error::Error,
@@ -43,11 +42,13 @@ struct WalletDetails {
     top_block_hash: String,
     username: String,
 }
+
 #[derive(Clone, Deserialize, Debug)]
 struct Blockcount {
     success: bool,
     blockcount: u64,
 }
+
 #[derive(Clone, Deserialize, Debug)]
 struct Transactioncount {
     success: bool,
@@ -73,10 +74,12 @@ struct Balances {
     balance: u64,
     locked: u64,
 }
+
 lazy_static! {
     static ref WALLET_DETAILS: Mutex<WalletDetails> = Mutex::new(WalletDetails::default());
     static ref SERVER_ADDR: Mutex<String> = Mutex::new(String::from("http://127.0.0.1:8000"));
 }
+
 fn trim_newline(s: &mut String) -> String {
     if s.ends_with('\n') {
         s.pop();
@@ -196,7 +199,7 @@ fn setup_logging(verbosity: u64) -> Result<(), fern::InitError> {
     Ok(())
 }
 
-async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Box<dyn Error>> {
+async fn form_receive_block(blk: &Block, for_chain: &str) -> Result<Block, Box<dyn Error>> {
     if blk.block_type == BlockType::Recieve {
         return Err("Block is recive block already".into());
     }
@@ -221,12 +224,12 @@ async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Bo
         blk_clone.header.prev_hash = blk.hash.clone();
         blk_clone.hash();
         blk_clone.signature = "".to_string();
-        return Ok(blk_clone);
+        Ok(blk_clone)
     } else {
         let request_url = format!(
             "{}/api/v1/blockcount/{}",
-            SERVER_ADDR.lock().unwrap().to_owned(),
-            for_chain.clone()
+            SERVER_ADDR.lock().unwrap(),
+            for_chain
         );
         let response = reqwest::get(&request_url).await?;
 
@@ -234,8 +237,8 @@ async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Bo
         let height = response_decoded.blockcount;
         let request_url = format!(
             "{}/api/v1/hash_at_height/{}/{}",
-            SERVER_ADDR.lock().unwrap().to_owned(),
-            for_chain.clone(),
+            SERVER_ADDR.lock().unwrap(),
+            for_chain,
             height - 1
         );
         let response = reqwest::get(&request_url).await?;
@@ -246,7 +249,7 @@ async fn form_receive_block(blk: &Block, for_chain: &String) -> Result<Block, Bo
         blk_clone.header.prev_hash = response_decoded.hash;
         blk_clone.hash();
         blk_clone.signature = "".to_string();
-        return Ok(blk_clone);
+        Ok(blk_clone)
     }
 }
 
@@ -255,12 +258,13 @@ fn get_choice() -> u8 {
     info!("[2] Create a wallet");
     info!("[3] Import private keys");
     let ans: u8 = trim_newline(&mut read!()).parse::<u8>().unwrap();
-    return ans;
+    ans
 }
+
 pub fn new_ann(ann: Announcement) {
     if let Ok(mut locked) = WALLET_DETAILS.lock() {
         debug!("Gained lock on WALLET_DETAILS");
-        if ann.m_type == "block".to_string() {
+        if ann.m_type == "block" {
             // ann.msg contains a block in json format
             if let Ok(blk) = serde_json::from_str::<Block>(&ann.content) {
                 if blk.block_type == BlockType::Recieve {
@@ -303,8 +307,8 @@ pub fn new_ann(ann: Announcement) {
 async fn send_transaction(txn: Transaction, wall: Wallet) -> Result<(), Box<dyn Error>> {
     let request_url = format!(
         "{}/api/v1/blockcount/{}",
-        SERVER_ADDR.lock().unwrap().to_owned(),
-        wall.public_key.clone()
+        SERVER_ADDR.lock().unwrap(),
+        wall.public_key
     );
     let response = reqwest::get(&request_url).await?;
 
@@ -312,8 +316,8 @@ async fn send_transaction(txn: Transaction, wall: Wallet) -> Result<(), Box<dyn 
     let height = response_decoded.blockcount;
     let request_url = format!(
         "{}/api/v1/hash_at_height/{}/{}",
-        SERVER_ADDR.lock().unwrap().to_owned(),
-        wall.public_key.clone(),
+        SERVER_ADDR.lock().unwrap(),
+        wall.public_key,
         height - 1
     );
     let response = reqwest::get(&request_url).await?;
@@ -352,7 +356,7 @@ async fn send_transaction(txn: Transaction, wall: Wallet) -> Result<(), Box<dyn 
     let mut failed = false;
     for txn in &blk.txns {
         if !proccessed_accs.contains(&txn.receive_key) {
-            let try_rec_block = form_receive_block(&blk, &txn.receive_key.to_owned()).await;
+            let try_rec_block = form_receive_block(&blk, &txn.receive_key).await;
             if let Ok(rec_blk) = try_rec_block {
                 trace!("Created rec block={:#?}", rec_blk);
 
@@ -398,6 +402,7 @@ async fn send_transaction(txn: Transaction, wall: Wallet) -> Result<(), Box<dyn 
 
     Ok(())
 }
+
 #[tokio::main]
 async fn main() {
     let matches = App::new("Avrio Wallet")
@@ -437,14 +442,19 @@ async fn main() {
         )
         .get_matches();
     //println!("{}", matches.occurrences_of("loglev"));
-    let art = "
-   #    #     # ######  ### #######
-  # #   #     # #     #  #  #     #
- #   #  #     # #     #  #  #     #
-#     # #     # ######   #  #     #
-#######  #   #  #   #    #  #     #
-#     #   # #   #    #   #  #     #
-#     #    #    #     # ### ####### ";
+    let art = " 
+    ▄▄▄▄▄▄▄▄▄▄▄  ▄               ▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
+   ▐░░░░░░░░░░░▌▐░▌             ▐░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
+   ▐░█▀▀▀▀▀▀▀█░▌ ▐░▌           ▐░▌ ▐░█▀▀▀▀▀▀▀█░▌ ▀▀▀▀█░█▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌
+   ▐░▌       ▐░▌  ▐░▌         ▐░▌  ▐░▌       ▐░▌     ▐░▌     ▐░▌       ▐░▌
+   ▐░█▄▄▄▄▄▄▄█░▌   ▐░▌       ▐░▌   ▐░█▄▄▄▄▄▄▄█░▌     ▐░▌     ▐░▌       ▐░▌
+   ▐░░░░░░░░░░░▌    ▐░▌     ▐░▌    ▐░░░░░░░░░░░▌     ▐░▌     ▐░▌       ▐░▌
+   ▐░█▀▀▀▀▀▀▀█░▌     ▐░▌   ▐░▌     ▐░█▀▀▀▀█░█▀▀      ▐░▌     ▐░▌       ▐░▌
+   ▐░▌       ▐░▌      ▐░▌ ▐░▌      ▐░▌     ▐░▌       ▐░▌     ▐░▌       ▐░▌
+   ▐░▌       ▐░▌       ▐░▐░▌       ▐░▌      ▐░▌  ▄▄▄▄█░█▄▄▄▄ ▐░█▄▄▄▄▄▄▄█░▌
+   ▐░▌       ▐░▌        ▐░▌        ▐░▌       ▐░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
+    ▀         ▀          ▀          ▀         ▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀ 
+                                                                          ";
     println!("{}", art);
     setup_logging(
         matches
@@ -455,7 +465,7 @@ async fn main() {
     )
     .expect("Failed to setup logging");
     info!("Avrio Wallet Testnet v1.0.0 (pre-alpha)");
-    let config_ = config();
+    let config_ = config().clone();
     let _ = config_.save();
     info!("Welcome to the avrio wallet, please choose an option");
     let wallet = match get_choice() {
@@ -487,7 +497,7 @@ async fn main() {
             drop(locked_ls);
             let request_url = format!(
                 "{}/api/v1/blockcount/{}",
-                SERVER_ADDR.lock().unwrap().to_string(),
+                SERVER_ADDR.lock().unwrap(),
                 wall.public_key
             );
             let try_get_response = reqwest::get(&request_url).await;
@@ -602,7 +612,7 @@ async fn main() {
                     }
                     let request_url = format!(
                         "{}/api/v1/balances/{}",
-                        SERVER_ADDR.lock().unwrap().to_string(),
+                        SERVER_ADDR.lock().unwrap(),
                         wall.public_key
                     );
                     if let Ok(response_undec) = reqwest::get(&request_url).await {
@@ -629,7 +639,7 @@ async fn main() {
                     }
                     let request_url = format!(
                         "{}/api/v1/transactioncount/{}",
-                        SERVER_ADDR.lock().unwrap().to_string(),
+                        SERVER_ADDR.lock().unwrap(),
                         wall.public_key
                     );
                     if let Ok(response) = reqwest::get(&request_url).await {
@@ -649,12 +659,14 @@ async fn main() {
                         rpcaddr = addr;
                     }
                     let rpcaddr_split: Vec<&str> = rpcaddr.split(':').collect();
-                    if let Ok(_) = launch_client(
+                    if launch_client(
                         rpcaddr_split[0].to_string(),
                         rpcaddr_split[1].parse().unwrap_or(17785),
                         vec![],
                         caller,
-                    ) {
+                    )
+                    .is_ok()
+                    {
                         debug!("Launched RPC listener");
                     } else {
                         error!("Failed to connect to RPC server, please check it is running on the specified (or default) port");
@@ -735,7 +747,7 @@ async fn main() {
                                 };
                                 let request_url = format!(
                                     "{}/api/v1/balances/{}",
-                                    SERVER_ADDR.lock().unwrap().to_string(),
+                                    SERVER_ADDR.lock().unwrap(),
                                     wall.public_key
                                 );
                                 if let Ok(response_undec) = reqwest::get(&request_url).await {
@@ -753,7 +765,7 @@ async fn main() {
                                     );
                                                 let request_url = format!(
                                                     "{}/api/v1/publickey_for_username/{}",
-                                                    SERVER_ADDR.lock().unwrap().to_string(),
+                                                    SERVER_ADDR.lock().unwrap(),
                                                     addr
                                                 );
                                                 if let Ok(response) =
@@ -770,7 +782,7 @@ async fn main() {
                                             }
                                             let request_url = format!(
                                                 "{}/api/v1/transactioncount/{}",
-                                                SERVER_ADDR.lock().unwrap().to_string(),
+                                                SERVER_ADDR.lock().unwrap(),
                                                 wall.public_key
                                             );
                                             if let Ok(response) = reqwest::get(&request_url).await {
@@ -825,7 +837,7 @@ async fn main() {
                             };
                             let request_url = format!(
                                 "{}/api/v1/transactioncount/{}",
-                                SERVER_ADDR.lock().unwrap().to_string(),
+                                SERVER_ADDR.lock().unwrap(),
                                 wall.public_key
                             );
                             if let Ok(response) = reqwest::get(&request_url).await {
@@ -844,20 +856,17 @@ async fn main() {
                             } else {
                                 error!("Failed to send request={}", request_url);
                             }
-                        } else if read == *"address"
-                            || read == *"get_address"
-                            || read == *"get_addr"
-                        {
+                        } else if read == "address" || read == "get_address" || read == "get_addr" {
                             info!("Our address: {}", wall.address());
-                        } else if read == *"balance" || read == *"get_balance" || read == *"bal" {
+                        } else if read == "balance" || read == "get_balance" || read == "bal" {
                             if let Ok(lock) = WALLET_DETAILS.lock() {
                                 info!("Our balance: {}", to_dec(lock.balance));
                             } else {
                                 error!("Failed to get lock on WALLET_DETAILS muxtex (try again)");
                             }
-                        } else if read == *"register_username" {
+                        } else if read == "register_username" {
                             if let Ok(lock) = WALLET_DETAILS.lock() {
-                                if lock.username == "" {
+                                if lock.username.is_empty() {
                                     info!("Enter desired_username:");
                                     let desired_username: String = trim_newline(&mut read!());
                                     if !desired_username.chars().all(char::is_alphanumeric) {
@@ -865,14 +874,14 @@ async fn main() {
                                     } else {
                                         let request_url = format!(
                                             "{}/api/v1/publickey_for_username/{}",
-                                            SERVER_ADDR.lock().unwrap().to_string(),
+                                            SERVER_ADDR.lock().unwrap(),
                                             desired_username
                                         );
                                         if let Ok(response) = reqwest::get(&request_url).await {
                                             if let Ok(publickey_for_username) =
                                                 response.json::<PublickeyForUsername>().await
                                             {
-                                                if publickey_for_username.publickey != "" {
+                                                if !publickey_for_username.publickey.is_empty() {
                                                     error!("Username {} is taken, try another (rerun register_username)", desired_username);
                                                 } else {
                                                     let mut txn = Transaction {
@@ -897,7 +906,7 @@ async fn main() {
                                                     };
                                                     let request_url = format!(
                                                         "{}/api/v1/balances/{}",
-                                                        SERVER_ADDR.lock().unwrap().to_string(),
+                                                        SERVER_ADDR.lock().unwrap(),
                                                         wall.public_key
                                                     );
                                                     if let Ok(response_undec) =
@@ -913,10 +922,7 @@ async fn main() {
                                                             } else {
                                                                 let request_url = format!(
                                                                     "{}/api/v1/transactioncount/{}",
-                                                                    SERVER_ADDR
-                                                                        .lock()
-                                                                        .unwrap()
-                                                                        .to_string(),
+                                                                    SERVER_ADDR.lock().unwrap(),
                                                                     wall.public_key
                                                                 );
                                                                 if let Ok(response) =
@@ -970,7 +976,7 @@ async fn main() {
                             } else {
                                 error!("Failed to get lock on WALLET_DETAILS muxtex (try again)");
                             }
-                        } else if read == *"get_keypair" {
+                        } else if read == "get_keypair" {
                             warn!("WARNING: You are about to be given the private key to your account. This string allows ANYONE (with the key) to send a transaction from your account");
                             warn!("If someone is telling you to give them this key, you are probably being scammed. The avrio team will never ask your for your private key. ");
                             warn!("The only time you should enter your private key, is into a wallet to use your funds. HOWEVER, we do not reccomened doing this. Instead create a new wallet, and send the funds to it from here");
@@ -984,7 +990,7 @@ async fn main() {
                                 println!("Your publickey is: {}", wall.public_key); // println! to prevent it being saved in the logs
                                 println!("Your private key is: {}", wall.private_key);
                             }
-                        } else if read == *"burn" {
+                        } else if read == "burn" {
                             info!("Please enter the amount");
                             let amount: f64 =
                                 trim_newline(&mut read!("{}\n")).parse::<f64>().unwrap();
@@ -1009,7 +1015,7 @@ async fn main() {
                             };
                             let request_url = format!(
                                 "{}/api/v1/balances/{}",
-                                SERVER_ADDR.lock().unwrap().to_string(),
+                                SERVER_ADDR.lock().unwrap(),
                                 wall.public_key
                             );
                             if let Ok(response_undec) = reqwest::get(&request_url).await {
@@ -1019,7 +1025,7 @@ async fn main() {
                                     } else {
                                         let request_url = format!(
                                             "{}/api/v1/transactioncount/{}",
-                                            SERVER_ADDR.lock().unwrap().to_string(),
+                                            SERVER_ADDR.lock().unwrap(),
                                             wall.public_key
                                         );
                                         if let Ok(response) = reqwest::get(&request_url).await {
@@ -1059,10 +1065,10 @@ async fn main() {
                                 let txn_per_block: u64 = read_split[2].parse().unwrap_or(1);
                                 let mut blocks: Vec<Block> = vec![];
                                 if txn_per_block <= 10 && amount < 200 {
-                                    let mut failed = false;
+                                    let failed = false;
                                     let request_url = format!(
                                         "{}/api/v1/balances/{}",
-                                        SERVER_ADDR.lock().unwrap().to_string(),
+                                        SERVER_ADDR.lock().unwrap(),
                                         wall.public_key
                                     );
                                     if let Ok(response_undec) = reqwest::get(&request_url).await {
@@ -1078,8 +1084,8 @@ async fn main() {
                                                 let mut top_block_hash: String;
                                                 let request_url = format!(
                                                     "{}/api/v1/blockcount/{}",
-                                                    SERVER_ADDR.lock().unwrap().to_owned(),
-                                                    wall.public_key.clone()
+                                                    SERVER_ADDR.lock().unwrap(),
+                                                    wall.public_key
                                                 );
                                                 if let Ok(response) =
                                                     reqwest::get(&request_url).await
@@ -1091,8 +1097,8 @@ async fn main() {
                                                             + height_delta;
                                                         let request_url = format!(
                                                             "{}/api/v1/hash_at_height/{}/{}",
-                                                            SERVER_ADDR.lock().unwrap().to_owned(),
-                                                            wall.public_key.clone(),
+                                                            SERVER_ADDR.lock().unwrap(),
+                                                            wall.public_key,
                                                             height - 1
                                                         );
                                                         if let Ok(response) =
@@ -1134,7 +1140,7 @@ async fn main() {
 
                                                                         let request_url = format!(
                                                             "{}/api/v1/transactioncount/{}",
-                                                            SERVER_ADDR.lock().unwrap().to_string(),
+                                                            SERVER_ADDR.lock().unwrap(),
                                                             wall.public_key
                                                         );
                                                                         if let Ok(response) =
@@ -1166,11 +1172,8 @@ async fn main() {
                                                                     }
                                                                     let request_url = format!(
                                                                         "{}/api/v1/blockcount/{}",
-                                                                        SERVER_ADDR
-                                                                            .lock()
-                                                                            .unwrap()
-                                                                            .to_owned(),
-                                                                        wall.public_key.clone()
+                                                                        SERVER_ADDR.lock().unwrap(),
+                                                                        wall.public_key
                                                                     );
                                                                     if let Ok(response) =
                                                                         reqwest::get(&request_url)
@@ -1369,18 +1372,18 @@ pub fn create_wallet() -> Result<Wallet, Box<dyn Error>> {
     let name: String = trim_newline(&mut read!());
     info!("Enter password:");
     let password: String = rpassword::read_password()?;
-    if get_data(config().db_path + &"/wallets/".to_owned() + &name, "pubkey") != "-1" {
+    if get_data(&(config_db_path() + "/wallets/" + &name), "pubkey") != "-1" {
         error!("Wallet already exists");
-        return Err("Wallet path taken".into());
+        Err("Wallet path taken".into())
     } else {
         let mut keypair: Vec<String> = vec![];
         generate_keypair(&mut keypair);
         if let Err(e) = save_wallet(&keypair, password, name) {
             error!("Failed to save new wallet, gave error={}", e);
-            return Err(e);
+            Err(e)
         } else {
             info!("Created and saved wallet with public key: {}", keypair[0]);
-            return Ok(Wallet::from_private_key(keypair[1].clone()));
+            Ok(Wallet::from_private_key(keypair[1].clone()))
         }
     }
 }
@@ -1390,7 +1393,7 @@ fn import_wallet() -> Result<Wallet, Box<dyn Error>> {
     let private_key: String = trim_newline(&mut read!());
     info!("Please enter name of new wallet");
     let name: String = trim_newline(&mut read!());
-    if get_data(config().db_path + &"/wallets/".to_owned() + &name, "pubkey") != "-1" {
+    if get_data(&(config_db_path() + "/wallets/" + &name), "pubkey") != "-1" {
         error!("Wallet with name={} already exists", name);
         return Err("wallet with name already exists".into());
     }
@@ -1420,8 +1423,7 @@ pub fn save_wallet(
     password: String,
     name: String,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut conf = config();
-    let path = conf.db_path.clone() + &"/wallets/".to_owned() + &name;
+    let path: String = config_db_path() + "/wallets/" + &name;
     let mut padded = password.as_bytes().to_vec();
     while padded.len() != 32 && padded.len() < 33 {
         padded.push(b"n"[0]);
@@ -1445,9 +1447,10 @@ pub fn save_wallet(
         aead.encrypt(nonce, keypair[1].as_bytes().as_ref())
             .expect("wallet private key encryption failure!"),
     );
-    let _ = save_data(&publickey_en, &path, "pubkey".to_owned());
-    let _ = save_data(&privatekey_en, &path, "privkey".to_owned());
+    let _ = save_data(&publickey_en, &path, "pubkey");
+    let _ = save_data(&privatekey_en, &path, "privkey");
     info!("Saved wallet to {}", path);
+    let mut conf = config().clone();
     conf.chain_key = keypair[0].clone();
     conf.create()?;
     Ok(())
@@ -1457,7 +1460,7 @@ pub fn generate_keypair(out: &mut Vec<String>) {
     let wallet: Wallet = Wallet::gen();
     out.push(wallet.public_key.clone());
     out.push(wallet.private_key);
-    let mut conf = config();
+    let mut conf = config().clone();
     conf.chain_key = wallet.public_key;
     let _ = conf.save();
 }
@@ -1481,8 +1484,8 @@ pub fn open_wallet(wallet_name: String, password: String) -> Wallet {
     let nonce = GenericArray::from_slice(padded_string.as_bytes()); // 96-bits; unique per message
     trace!("nonce: {}", padded_string);
     let ciphertext = hex::decode(get_data(
-        config().db_path + &"/wallets/".to_owned() + &wallet_name,
-        &"privkey".to_owned(),
+        &(config_db_path() + "/wallets/" + &wallet_name),
+        "privkey",
     ))
     .expect("failed to parse hex");
     let privkey = String::from_utf8(

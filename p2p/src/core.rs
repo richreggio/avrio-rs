@@ -9,7 +9,7 @@ use avrio_config::config;
 use std::time::Duration;
 use std::{
     convert::TryInto,
-    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr},
+    net::{Shutdown, SocketAddr},
 };
 use x25519_dalek::EphemeralSecret;
 use x25519_dalek::PublicKey;
@@ -88,7 +88,7 @@ pub fn new_connection(addr: &str) -> Result<std::net::TcpStream, Box<dyn std::er
     } else if hex::encode(&config().network_id) != d_split[0] {
         Err("wrong network id".into())
     } else if d_split[1] == config().identitiy {
-        return Err("tried to connect to peer with the same identity (self)".into());
+        Err("tried to connect to peer with the same identity (self)".into())
     } else {
         let addr_s = addr.to_string();
         let ip_s = addr_s.split(':').collect::<Vec<&str>>()[0];

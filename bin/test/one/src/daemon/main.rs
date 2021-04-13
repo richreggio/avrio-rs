@@ -9,8 +9,8 @@ use std::fs::create_dir_all;
 use std::process;
 
 pub extern crate avrio_config;
-use avrio_config::{config, config_db_path, Config};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use avrio_config::{config, config_db_path};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
 
 extern crate avrio_core;
@@ -320,12 +320,11 @@ fn main() {
     let _ = mempool.save_to_disk(&(config_db_path() + "/mempool")); // create files
     *(MEMPOOL.lock().unwrap()) = Some(mempool);
     info!("Avrio Daemon successfully launched");
-    let mut statedigest = get_data(config_db_path() + &"/chaindigest".to_owned(), "master");
+    let mut statedigest = get_data(&(config_db_path() + "/chaindigest"), "master");
     if statedigest == "-1" {
         generate_chains().unwrap();
-        statedigest =
-            avrio_blockchain::form_state_digest(config_db_path() + &"/chaindigest".to_owned())
-                .unwrap_or_default();
+        statedigest = avrio_blockchain::form_state_digest(&(config_db_path() + "/chaindigest"))
+            .unwrap_or_default();
         info!("State digest: {}", statedigest);
     } else {
         info!("State digest: {}", statedigest);
@@ -345,9 +344,9 @@ fn main() {
             process::exit(1);
         }
     });
-    let mut pl = get_peerlist().unwrap_or_default();
+    let mut peerlist = get_peerlist().unwrap_or_default();
     let mut seednodes: Vec<SocketAddr> = vec![];
-    for seednode_addr in config().seednodes {
+    for seednode_addr in &config().seednodes {
         if let Ok(addr) = seednode_addr.parse::<SocketAddr>() {
             seednodes.push(addr);
         } else {
@@ -364,7 +363,7 @@ fn main() {
     connect(peerlist, &mut connections);
     let connections_mut: Vec<&mut TcpStream> = connections.iter_mut().collect();
     let mut new_peers: Vec<SocketAddr> = vec![];
-    for connection in &connections_mut {
+    for connection in connections_mut {
         for peer in avrio_p2p::helper::get_peerlist_from_peer(&connection.peer_addr().unwrap())
             .unwrap_or_default()
         {

@@ -22,7 +22,7 @@ use std::io::prelude::*;
 extern crate avrio_p2p;
 
 fn not_supported() -> String {
-    "{ \"error\": \"NOT_SUPPORTED\"}".to_owned()
+    "{ \"error\": \"NOT_SUPPORTED\"}".to_string()
 }
 
 #[get("/")]
@@ -34,19 +34,19 @@ fn must_provide_method() -> &'static str {
 pub fn get_blockcount_v1(chain: String) -> String {
     let our_height_string = get_data(
         &(config_db_path() + "/chains/" + &chain + "-chainindex"),
-        &"blockcount".to_owned(),
+        "blockcount",
     );
     if our_height_string == "-1" {
-        "{ \"success\": true, ".to_owned() + "\"blockcount\": " + &0.to_string() + " }"
+        "{ \"success\": true, \"blockcount\": 0 }".to_string()
     } else {
         let try_parse = our_height_string.parse::<u64>();
         if let Ok(our_height) = try_parse {
-            "{ \"success\": true, ".to_owned() + "\"blockcount\": " + &our_height.to_string() + " }"
+            format!("{{ \"success\": true, \"blockcount\": {} }}", our_height)
         } else {
-            "{ \"success\": false, ".to_owned()
-                + "\"error\": "
-                + &try_parse.unwrap_err().to_string()
-                + " }"
+            format!(
+                "{{ \"success\": false, \"error\": {} }}",
+                try_parse.unwrap_err()
+            )
         }
     }
 }
@@ -55,22 +55,22 @@ pub fn get_blockcount_v1(chain: String) -> String {
 pub fn transaction_count(chain: String) -> String {
     let txn_count_string = get_data(
         &(config_db_path() + "/chains/" + &chain + "-chainindex"),
-        &"txncount".to_owned(),
+        "txncount",
     );
     if txn_count_string == "-1" {
-        "{ \"success\": true, ".to_owned() + "\"transaction_count\": " + &0.to_string() + " }"
+        "{ \"success\": true, \"transaction_count\": 0 }".to_string()
     } else {
         let try_parse = txn_count_string.parse::<u64>();
         if let Ok(txn_count) = try_parse {
-            "{ \"success\": true, ".to_owned()
-                + "\"transaction_count\": "
-                + &txn_count.to_string()
-                + " }"
+            format!(
+                "{{ \"success\": true, \"transaction_count\": {} }}",
+                txn_count
+            )
         } else {
-            "{ \"success\": false, ".to_owned()
-                + "\"error\": "
-                + &try_parse.unwrap_err().to_string()
-                + " }"
+            format!(
+                "{{ \"success\": false, \"error\": {} }}",
+                try_parse.unwrap_err()
+            )
         }
     }
 }
@@ -81,27 +81,15 @@ pub fn get_balance_v1(chain: String) -> String {
         let balance: u64 = acc.balance;
         let locked: u64 = acc.locked;
 
-        "{ \"success\": true, ".to_owned()
-            + "\"chainkey\": \""
-            + &chain
-            + "\", "
-            + "\"balance\": "
-            + &balance.to_string()
-            + ", "
-            + "\"locked\": "
-            + &locked.to_string()
-            + " }"
+        format!(
+            "{{ \"success\": true, \"chainkey\": \"{}\", \"balance\": {}, \"locked\": {} }}",
+            chain, balance, locked
+        )
     } else {
-        "{ \"success\": false, ".to_owned()
-            + "\"chainkey\": "
-            + &chain
-            + ", "
-            + "\"balance\": "
-            + &0.to_string()
-            + ", "
-            + "\"locked\": "
-            + &0.to_string()
-            + " }"
+        format!(
+            "{{ \"success\": false, \"chainkey\": \"{}\", \"balance\": 0, \"locked\": 0 }}",
+            chain
+        )
     }
 }
 
@@ -109,16 +97,19 @@ pub fn get_balance_v1(chain: String) -> String {
 pub fn get_block_v1(hash: String) -> String {
     let block = get_block_from_raw(hash);
     if let Ok(block_str) = serde_json::to_string(&block) {
-        return "{ \"success\": true, \"response\": { \"block\": ".to_owned() + &block_str + " } }";
+        return format!(
+            "{{ \"success\": true, \"response\": {{ \"block\": {} }} }}",
+            block_str
+        );
     }
-    "{ \"success\": false, \"response\": { \"block\": } }".to_owned()
+    "{ \"success\": false, \"response\": { \"block\": } }".to_string()
 }
 
 #[get("/hash_at_height/<chain>/<height>")]
 pub fn hash_at_height(height: u64, chain: String) -> String {
     let block = get_block(&chain, height);
 
-    "{ \"success\": true, \"hash\": \"".to_string() + &block.hash + "\" }"
+    format!("{{ \"success\": true, \"hash\": \"{}\" }}", block.hash)
 }
 
 #[get("/usernames")]
@@ -129,7 +120,10 @@ pub fn get_usernames_v1() -> String {
 #[get("/publickey_for_username/<username>")]
 pub fn get_publickey_for_username(username: String) -> String {
     if let Ok(acc) = avrio_core::account::get_by_username(&username) {
-        "{ \"success\": true, \"publickey\": \"".to_string() + &acc.public_key + "\" }"
+        format!(
+            "{{ \"success\": true, \"publickey\": \"{}\" }}",
+            acc.public_key
+        )
     } else {
         error!("Could not find an account with username = {}", username);
         "{ \"success\": false, \"publickey\": \"\" }".to_string()
@@ -139,7 +133,10 @@ pub fn get_publickey_for_username(username: String) -> String {
 #[get("/username_for_publickey/<publickey>")]
 pub fn username_for_publickey(publickey: String) -> String {
     if let Ok(acc) = avrio_core::account::get_account(&publickey) {
-        "{ \"success\": true, \"username\": \"".to_string() + &acc.username + "\" }"
+        format!(
+            "{{ \"success\": true, \"username\": \"{}\" }}",
+            acc.username
+        )
     } else {
         error!("Could not find an account with publickey = {}", publickey);
         "{ \"success\": false, \"username\": \"\" }".to_string()
@@ -148,7 +145,10 @@ pub fn username_for_publickey(publickey: String) -> String {
 
 #[get("/publickey_to_address/<publickey>")]
 pub fn publickey_to_address(publickey: String) -> String {
-    "{ \"success\": true, \"address\": \"".to_string() + &public_key_to_address(&publickey) + "\" }"
+    format!(
+        "{{ \"success\": true, \"address\": \"{}\" }}",
+        public_key_to_address(&publickey)
+    )
 }
 
 #[get("/chainlist")]
@@ -162,7 +162,7 @@ pub fn chainlist() -> String {
 
         log::trace!("Our chain list: {:#?}", chains);
         if let Ok(s) = serde_json::to_string(&chains) {
-            "{ \"success\": true, \"list\": ".to_owned() + &s + " }"
+            format!("{{ \"success\": true, \"list\": {} }}", s)
         } else {
             error!("Could not find seralise chainlist");
             "{ \"success\": false, \"chain\": \"\" }".to_string()
@@ -203,7 +203,7 @@ pub fn blocks_above_hash(hash: String, chain: String, amount: u64) -> String {
             prev = get_block(&chain, got);
         }
         if let Ok(blks_string) = serde_json::to_string(&blks) {
-            "{ \"success\": true, \"blocks\":".to_string() + &blks_string + "}"
+            format!("{{ \"success\": true, \"blocks\": {} }}", blks_string)
         } else {
             debug!("Could not seralise blocks vec (context getblocksabovehash api call)");
             "{ \"success\": false, \"blocks\": [] }".to_string()
